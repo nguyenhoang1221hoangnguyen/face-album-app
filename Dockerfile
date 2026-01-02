@@ -4,7 +4,7 @@ FROM node:18-alpine AS node-builder
 
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm ci --omit=dev
 COPY server/ ./server/
 COPY public/ ./public/
 
@@ -13,13 +13,13 @@ FROM python:3.11-slim AS python-base
 
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    libgl1-mesa-glx \
+# Install system dependencies for OpenCV/InsightFace
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
-    libxrender-dev \
+    libxrender1 \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
@@ -34,14 +34,15 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Install Node.js and system dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
-    libxrender-dev \
+    libxrender1 \
     wget \
+    gnupg \
     && curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
