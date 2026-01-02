@@ -110,6 +110,61 @@ async function encodeFacesForAlbum(albumId, photos) {
   }
 }
 
+// Incremental encoding - chỉ encode ảnh mới và merge với encodings cũ
+async function encodeNewPhotos(albumId, newPhotos) {
+  try {
+    console.log(`Starting incremental encoding for album ${albumId} with ${newPhotos.length} new photos...`);
+    
+    const response = await fetch(`${FACE_API_URL}/encode-incremental`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        album_id: albumId,
+        photos: newPhotos.map(p => ({ 
+          id: p.id, 
+          url: p.thumbnail_url ? p.thumbnail_url.replace('=s220', '=s800') : p.full_url 
+        }))
+      })
+    });
+    
+    const result = await response.json();
+    console.log(`Incremental encoding completed for album ${albumId}:`, result);
+    
+    // Clear cache to reload with new encodings
+    await deleteCache(CACHE_KEYS.ALBUM_ENCODINGS(albumId));
+    
+    return result;
+  } catch (err) {
+    console.error('Error in incremental encoding:', err.message);
+    // Fallback to full encoding if incremental fails
+    return encodeFacesForAlbum(albumId, newPhotos);
+  }
+}
+
+// Xóa encodings của các ảnh đã bị xóa
+async function removePhotoEncodings(albumId, photoIds) {
+  try {
+    const response = await fetch(`${FACE_API_URL}/remove-photos`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        album_id: albumId,
+        photo_ids: photoIds
+      })
+    });
+    
+    const result = await response.json();
+    console.log(`Removed encodings for ${photoIds.length} photos:`, result);
+    
+    await deleteCache(CACHE_KEYS.ALBUM_ENCODINGS(albumId));
+    
+    return result;
+  } catch (err) {
+    console.error('Error removing photo encodings:', err.message);
+    return { error: err.message };
+  }
+}
+
 // GET all albums
 router.get('/', async (req, res) => {
   const albums = db.prepare(`
@@ -261,7 +316,7 @@ router.post('/', authMiddleware, validate(createAlbumSchema), async (req, res) =
   }
 });
 
-// POST sync album
+// POST sync album (incremental - chỉ thêm ảnh mới, xóa ảnh đã bị xóa khỏi Drive)
 router.post('/:id/sync', authMiddleware, syncLimiter, async (req, res) => {
   const album = db.prepare('SELECT * FROM albums WHERE id = ?').get(req.params.id);
   if (!album) {
@@ -272,41 +327,113 @@ router.post('/:id/sync', authMiddleware, syncLimiter, async (req, res) => {
     return res.status(400).json({ error: 'Chưa cấu hình Google API Key' });
   }
 
+  const forceFullSync = req.body.force === true;
+
   try {
-    db.prepare('DELETE FROM photos WHERE album_id = ?').run(album.id);
-
-    const photos = await fetchDrivePhotos(album.drive_folder_id, process.env.GOOGLE_API_KEY);
+    // Lấy danh sách ảnh từ Google Drive
+    const drivePhotos = await fetchDrivePhotos(album.drive_folder_id, process.env.GOOGLE_API_KEY);
+    const driveFileIds = new Set(drivePhotos.map(p => p.drive_file_id));
     
-    const insertPhoto = db.prepare(`
-      INSERT INTO photos (album_id, drive_file_id, name, thumbnail_url, full_url) 
-      VALUES (?, ?, ?, ?, ?)
-    `);
+    // Lấy danh sách ảnh hiện có trong DB
+    const existingPhotos = db.prepare('SELECT id, drive_file_id FROM photos WHERE album_id = ?').all(album.id);
+    const existingFileIds = new Set(existingPhotos.map(p => p.drive_file_id));
+    
+    let added = 0;
+    let removed = 0;
+    const newPhotos = [];
 
-    const insertedPhotos = [];
-    for (const photo of photos) {
-      const photoResult = insertPhoto.run(album.id, photo.drive_file_id, photo.name, photo.thumbnail_url, photo.full_url);
-      insertedPhotos.push({ id: photoResult.lastInsertRowid, full_url: photo.full_url, thumbnail_url: photo.thumbnail_url });
+    if (forceFullSync) {
+      // Full sync: xóa hết và tải lại
+      db.prepare('DELETE FROM photos WHERE album_id = ?').run(album.id);
+      removed = existingPhotos.length;
+      
+      const insertPhoto = db.prepare(`
+        INSERT INTO photos (album_id, drive_file_id, name, thumbnail_url, full_url) 
+        VALUES (?, ?, ?, ?, ?)
+      `);
+
+      for (const photo of drivePhotos) {
+        const result = insertPhoto.run(album.id, photo.drive_file_id, photo.name, photo.thumbnail_url, photo.full_url);
+        newPhotos.push({ id: result.lastInsertRowid, full_url: photo.full_url, thumbnail_url: photo.thumbnail_url });
+        added++;
+      }
+    } else {
+      // Incremental sync
+      // 1. Xóa ảnh không còn trên Drive
+      const photosToDelete = existingPhotos.filter(p => !driveFileIds.has(p.drive_file_id));
+      if (photosToDelete.length > 0) {
+        const deleteIds = photosToDelete.map(p => p.id);
+        const placeholders = deleteIds.map(() => '?').join(',');
+        db.prepare(`DELETE FROM photos WHERE id IN (${placeholders})`).run(...deleteIds);
+        removed = photosToDelete.length;
+        console.log(`Removed ${removed} photos that no longer exist on Drive`);
+        
+        // Xóa encodings của các ảnh đã bị xóa
+        removePhotoEncodings(album.id, deleteIds).catch(err => {
+          console.error('Error removing photo encodings:', err);
+        });
+      }
+
+      // 2. Thêm ảnh mới từ Drive
+      const photosToAdd = drivePhotos.filter(p => !existingFileIds.has(p.drive_file_id));
+      
+      if (photosToAdd.length > 0) {
+        const insertPhoto = db.prepare(`
+          INSERT INTO photos (album_id, drive_file_id, name, thumbnail_url, full_url) 
+          VALUES (?, ?, ?, ?, ?)
+        `);
+
+        for (const photo of photosToAdd) {
+          const result = insertPhoto.run(album.id, photo.drive_file_id, photo.name, photo.thumbnail_url, photo.full_url);
+          newPhotos.push({ id: result.lastInsertRowid, full_url: photo.full_url, thumbnail_url: photo.thumbnail_url });
+          added++;
+        }
+        console.log(`Added ${added} new photos from Drive`);
+      }
     }
 
-    if (photos.length > 0) {
+    // Cập nhật thumbnail nếu có ảnh mới
+    if (drivePhotos.length > 0) {
       db.prepare('UPDATE albums SET thumbnail = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-        .run(photos[0].thumbnail_url, album.id);
+        .run(drivePhotos[0].thumbnail_url, album.id);
     }
 
     // Invalidate cache
     await deleteCache(CACHE_KEYS.ALBUM_PHOTOS(album.id));
-    await deleteCache(CACHE_KEYS.ALBUM_ENCODINGS(album.id));
 
-    // Start face encoding (async)
-    encodeFacesForAlbum(album.id, insertedPhotos).then(result => {
-      console.log(`Album ${album.id} face encoding:`, result);
-    }).catch(err => {
-      console.error(`Album ${album.id} face encoding error:`, err);
-    });
+    // Chỉ encode face cho ảnh mới (nếu có)
+    if (newPhotos.length > 0) {
+      // Gọi incremental encoding
+      encodeNewPhotos(album.id, newPhotos).then(result => {
+        console.log(`Album ${album.id} incremental encoding:`, result);
+      }).catch(err => {
+        console.error(`Album ${album.id} encoding error:`, err);
+      });
+    }
+
+    const totalPhotos = db.prepare('SELECT COUNT(*) as count FROM photos WHERE album_id = ?').get(album.id).count;
     
+    let message = '';
+    if (added > 0 && removed > 0) {
+      message = `Đã thêm ${added} ảnh mới, xóa ${removed} ảnh cũ. `;
+    } else if (added > 0) {
+      message = `Đã thêm ${added} ảnh mới. `;
+    } else if (removed > 0) {
+      message = `Đã xóa ${removed} ảnh không còn tồn tại. `;
+    } else {
+      message = 'Album đã được cập nhật. Không có thay đổi. ';
+    }
+    
+    if (newPhotos.length > 0) {
+      message += 'Đang xử lý nhận diện khuôn mặt cho ảnh mới...';
+    }
+
     res.json({ 
-      message: `Đã đồng bộ ${photos.length} ảnh. Đang xử lý nhận diện khuôn mặt...`,
-      photo_count: photos.length
+      message,
+      total_photos: totalPhotos,
+      added,
+      removed,
+      unchanged: totalPhotos - added
     });
   } catch (err) {
     console.error('Error syncing:', err);
@@ -316,7 +443,7 @@ router.post('/:id/sync', authMiddleware, syncLimiter, async (req, res) => {
 
 // POST search faces
 router.post('/:id/search', searchLimiter, validate(searchSchema), async (req, res) => {
-  const { image } = req.body;
+  const { image, threshold } = req.body;
   const albumId = req.params.id;
 
   try {
@@ -326,7 +453,7 @@ router.post('/:id/search', searchLimiter, validate(searchSchema), async (req, re
       body: JSON.stringify({
         album_id: albumId,
         image: image,
-        tolerance: 0.5
+        threshold: threshold || 0.4
       })
     });
 
@@ -339,10 +466,17 @@ router.post('/:id/search', searchLimiter, validate(searchSchema), async (req, re
     if (result.matched_photo_ids && result.matched_photo_ids.length > 0) {
       const placeholders = result.matched_photo_ids.map(() => '?').join(',');
       const photos = db.prepare(`SELECT * FROM photos WHERE id IN (${placeholders})`).all(...result.matched_photo_ids);
-      return res.json({ photos, total: photos.length });
+      return res.json({ 
+        photos, 
+        total: photos.length,
+        face_bboxes: result.face_bboxes || [],
+        search_time_ms: result.search_time_ms,
+        search_method: result.search_method,
+        max_similarity: result.max_similarity
+      });
     }
 
-    res.json({ photos: [], total: 0 });
+    res.json({ photos: [], total: 0, face_bboxes: result.face_bboxes || [] });
   } catch (err) {
     console.error('Error searching faces:', err);
     res.status(500).json({ error: 'Lỗi tìm kiếm: Face Recognition API không khả dụng' });

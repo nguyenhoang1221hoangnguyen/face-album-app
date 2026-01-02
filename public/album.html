@@ -39,6 +39,23 @@
         <input type="file" id="upload-input" accept="image/*" style="display: none;" onchange="handleUpload(event)">
       </div>
 
+      <!-- Search Settings -->
+      <div id="search-settings" class="search-settings" style="margin-top: 20px; padding: 15px; background: #f8f9fa; border-radius: 10px;">
+        <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
+          <div style="flex: 1; min-width: 200px;">
+            <label style="display: block; margin-bottom: 5px; font-weight: 500; color: #333;">
+              <i class="fas fa-sliders-h"></i> Độ chính xác: <span id="threshold-value">40%</span>
+            </label>
+            <input type="range" id="threshold-slider" min="20" max="70" value="40" 
+                   style="width: 100%;" onchange="updateThreshold(this.value)">
+            <div style="display: flex; justify-content: space-between; font-size: 0.8rem; color: #666;">
+              <span>Nhiều kết quả</span>
+              <span>Chính xác hơn</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Camera Container -->
       <div id="camera-container" style="display: none; margin-top: 20px;">
         <div id="video-container">
@@ -75,10 +92,24 @@
       </button>
     </div>
 
-    <!-- Loading -->
+    <!-- Loading with Progress -->
     <div id="loading" class="loading" style="display: none;">
       <div class="spinner"></div>
       <p id="loading-text">Đang tải...</p>
+      <div id="loading-progress" style="display: none; margin-top: 10px; width: 200px;">
+        <div style="background: #e0e0e0; border-radius: 10px; overflow: hidden;">
+          <div id="progress-bar" style="height: 8px; background: linear-gradient(90deg, #667eea, #764ba2); width: 0%; transition: width 0.3s;"></div>
+        </div>
+        <p id="progress-text" style="font-size: 0.8rem; margin-top: 5px; color: #666;"></p>
+      </div>
+    </div>
+
+    <!-- Face Detection Preview -->
+    <div id="face-preview" style="display: none; margin: 20px auto; text-align: center;">
+      <div style="position: relative; display: inline-block;">
+        <canvas id="face-canvas" style="max-width: 300px; border-radius: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.1);"></canvas>
+      </div>
+      <p id="face-count" style="margin-top: 10px; color: #28a745; font-weight: 500;"></p>
     </div>
 
     <!-- Results Count -->
@@ -155,6 +186,62 @@
     let matchedPhotoIds = new Set(); // IDs của ảnh tìm được từ face search
     let albumPassword = ''; // Mật khẩu album (nếu có)
     let albumInfo = null; // Thông tin album
+    let searchThreshold = 0.4; // Ngưỡng tìm kiếm mặc định
+
+    function updateThreshold(value) {
+      searchThreshold = value / 100;
+      document.getElementById('threshold-value').textContent = value + '%';
+    }
+
+    function showProgress(percent, text) {
+      const progressBar = document.getElementById('progress-bar');
+      const progressText = document.getElementById('progress-text');
+      const loadingProgress = document.getElementById('loading-progress');
+      
+      loadingProgress.style.display = 'block';
+      progressBar.style.width = percent + '%';
+      if (text) progressText.textContent = text;
+    }
+
+    function hideProgress() {
+      document.getElementById('loading-progress').style.display = 'none';
+    }
+
+    function drawFacePreview(imageBase64, bboxes) {
+      const canvas = document.getElementById('face-canvas');
+      const ctx = canvas.getContext('2d');
+      const facePreview = document.getElementById('face-preview');
+      const faceCount = document.getElementById('face-count');
+      
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(300 / img.width, 300 / img.height, 1);
+        canvas.width = img.width * scale;
+        canvas.height = img.height * scale;
+        
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        
+        // Draw bounding boxes
+        ctx.strokeStyle = '#28a745';
+        ctx.lineWidth = 3;
+        
+        bboxes.forEach(bbox => {
+          const x = bbox[0] * scale;
+          const y = bbox[1] * scale;
+          const w = (bbox[2] - bbox[0]) * scale;
+          const h = (bbox[3] - bbox[1]) * scale;
+          ctx.strokeRect(x, y, w, h);
+        });
+        
+        facePreview.style.display = 'block';
+        faceCount.textContent = `✓ Phát hiện ${bboxes.length} khuôn mặt`;
+      };
+      img.src = imageBase64;
+    }
+
+    function hideFacePreview() {
+      document.getElementById('face-preview').style.display = 'none';
+    }
 
     async function loadAlbum() {
       try {
@@ -267,8 +354,16 @@
     }
 
     function renderPhotos(photos, page = 1) {
+      console.log('renderPhotos called with', photos.length, 'photos, page:', page);
+      
       const container = document.getElementById('photos-container');
       const pagination = document.getElementById('pagination');
+      
+      if (!photos || photos.length === 0) {
+        console.log('No photos to render');
+        container.style.display = 'none';
+        return;
+      }
       
       displayedPhotos = photos;
       const totalPages = Math.ceil(photos.length / photosPerPage);
@@ -276,14 +371,21 @@
       const endIndex = startIndex + photosPerPage;
       const pagePhotos = photos.slice(startIndex, endIndex);
 
+      console.log('Rendering', pagePhotos.length, 'photos on this page');
+
       container.innerHTML = '';
 
       pagePhotos.forEach((photo, index) => {
         const div = document.createElement('div');
         const isMatched = matchedPhotoIds.has(photo.id);
         div.className = 'photo-item' + (isMatched ? ' matched' : '');
+        
+        // Ưu tiên dùng drive_file_id để tạo thumbnail URL ổn định
+        const imgSrc = photo.drive_file_id 
+          ? `https://drive.google.com/thumbnail?id=${photo.drive_file_id}&sz=w400`
+          : (photo.thumbnail_url || photo.full_url || '');
         div.innerHTML = `
-          <img src="${photo.thumbnail_url || photo.full_url}" alt="${photo.name}" loading="lazy" onerror="this.parentElement.style.display='none'">
+          <img src="${imgSrc}" alt="${photo.name || 'photo'}" loading="lazy" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22200%22><rect fill=%22%23ddd%22 width=%22200%22 height=%22200%22/><text x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23999%22>Không tải được</text></svg>'">
           ${isSearchMode ? `<button class="photo-download-btn" onclick="event.stopPropagation(); downloadSinglePhoto(${startIndex + index})" title="Tải ảnh này"><i class="fas fa-download"></i></button>` : ''}
         `;
         div.onclick = () => openLightbox(startIndex + index);
@@ -291,6 +393,7 @@
       });
       
       container.style.display = 'grid';
+      console.log('Container display set to grid');
 
       if (totalPages > 1) {
         renderPagination(page, totalPages, photos.length);
@@ -488,18 +591,25 @@
       const container = document.getElementById('photos-container');
       
       loading.style.display = 'block';
-      document.getElementById('loading-text').textContent = 'Đang tìm kiếm khuôn mặt...';
+      document.getElementById('loading-text').textContent = 'Đang phân tích khuôn mặt...';
+      showProgress(20, 'Đang gửi ảnh...');
+      hideFacePreview();
 
       try {
         const res = await fetch(`${API_URL}/api/albums/${albumId}/search`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ image: imageBase64 })
+          body: JSON.stringify({ 
+            image: imageBase64,
+            threshold: searchThreshold
+          })
         });
 
+        showProgress(80, 'Đang tìm kiếm...');
         const result = await res.json();
         
         loading.style.display = 'none';
+        hideProgress();
         scanPrompt.style.display = 'none';
 
         if (!res.ok) {
@@ -510,25 +620,30 @@
           return;
         }
 
+        // Draw face preview with bounding boxes
+        if (result.face_bboxes && result.face_bboxes.length > 0) {
+          drawFacePreview(imageBase64, result.face_bboxes);
+        }
+
         if (result.photos && result.photos.length > 0) {
-          // Set search mode TRƯỚC khi render
           isSearchMode = true;
+          matchedPhotoIds = new Set(result.photos.map(p => Number(p.id)));
           
-          // Lưu ảnh tìm được
-          matchedPhotoIds = new Set(result.photos.map(p => p.id));
+          const searchInfo = result.search_time_ms ? ` (${result.search_time_ms}ms)` : '';
+          const methodInfo = result.search_method === 'faiss' ? ' ⚡' : '';
           
-          console.log('Found photos:', result.photos.length, result.photos);
-          
-          resultsCount.innerHTML = `🎉 Tìm thấy ${result.total} ảnh có mặt bạn! <button class="reset-search-btn" onclick="resetSearch()"><i class="fas fa-redo"></i> Tìm lại</button>`;
+          resultsCount.innerHTML = `🎉 Tìm thấy ${result.total} ảnh có mặt bạn!${methodInfo}${searchInfo} <button class="reset-search-btn" onclick="resetSearch()"><i class="fas fa-redo"></i> Tìm lại</button>`;
           resultsCount.style.background = '#e6ffe6';
           resultsCount.style.color = '#28a745';
           resultsCount.style.display = 'block';
           
-          // Ẩn scan prompt
           document.getElementById('scan-prompt').style.display = 'none';
-          document.getElementById('view-all-section').style.display = 'none';
+          const viewAllSection = document.getElementById('view-all-section');
+          if (viewAllSection) viewAllSection.style.display = 'none';
           
-          // Hiển thị CHỈ ảnh matched
+          container.style.display = 'grid';
+          container.innerHTML = '';
+          
           currentPage = 1;
           renderPhotos(result.photos, 1);
         } else {
@@ -554,6 +669,9 @@
       document.getElementById('photos-container').style.display = 'none';
       document.getElementById('pagination').style.display = 'none';
       document.getElementById('scan-prompt').style.display = 'block';
+      hideFacePreview();
+      const viewAllSection = document.getElementById('view-all-section');
+      if (viewAllSection && allPhotos.length > 0) viewAllSection.style.display = 'block';
     }
 
     document.addEventListener('keydown', (e) => {
