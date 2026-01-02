@@ -49,15 +49,15 @@ ENV FACE_API_URL=http://localhost:5001
 EXPOSE 3000 5001
 
 # Create startup script with better error handling
-RUN echo '#!/bin/bash\n\
+RUN printf '#!/bin/bash\n\
 set -e\n\
-echo "Starting Face Recognition API..."\n\
-PORT=$FACE_API_PORT python python/face_api.py &\n\
+echo "Starting Face Recognition API on port 5001..."\n\
+PORT=5001 python python/face_api.py &\n\
 PYTHON_PID=$!\n\
 echo "Waiting for Face API to start..."\n\
 sleep 15\n\
-echo "Starting Web Server..."\n\
-PORT=$WEB_PORT node server/server.js &\n\
+echo "Starting Web Server on port 3000..."\n\
+PORT=3000 node server/server.js &\n\
 NODE_PID=$!\n\
 wait $PYTHON_PID $NODE_PID\n\
 ' > /app/start.sh && chmod +x /app/start.sh
