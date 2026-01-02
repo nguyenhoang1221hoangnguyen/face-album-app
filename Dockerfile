@@ -1,69 +1,43 @@
-# Multi-stage build for Face Album App
-# Stage 1: Build Node.js app
-FROM node:18-alpine AS node-builder
-
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci --omit=dev
-COPY server/ ./server/
-COPY public/ ./public/
-
-# Stage 2: Python Face API
-FROM python:3.11-slim AS python-base
-
-WORKDIR /app
-
-# Install build tools and system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    g++ \
-    libgl1 \
-    libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender1 \
-    wget \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY python/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY python/ ./python/
-
-# Stage 3: Final image with both Node.js and Python
+# Single-stage build to avoid library compatibility issues
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install Node.js and system dependencies
+# Install Node.js, build tools and system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    gnupg \
+    build-essential \
+    g++ \
+    python3-dev \
     libgl1 \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
     libxrender1 \
     wget \
-    gnupg \
     && curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy Python dependencies
-COPY --from=python-base /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
-COPY --from=python-base /usr/local/bin /usr/local/bin
+# Copy and install Python dependencies
+COPY python/requirements.txt ./python/
+RUN pip install --no-cache-dir -r python/requirements.txt
 
-# Copy Node.js app
-COPY --from=node-builder /app/node_modules ./node_modules
-COPY --from=node-builder /app/package*.json ./
-COPY --from=node-builder /app/server ./server
-COPY --from=node-builder /app/public ./public
+# Copy and install Node.js dependencies
+COPY package*.json ./
+RUN npm ci --omit=dev
 
-# Copy Python app
-COPY --from=python-base /app/python ./python
+# Copy application code
+COPY server/ ./server/
+COPY public/ ./public/
+COPY python/ ./python/
 
 # Create data directories
 RUN mkdir -p ./data/encodings ./data/status
+
+# Pre-download InsightFace model to avoid runtime download issues
+RUN python -c "from insightface.app import FaceAnalysis; app = FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider']); app.prepare(ctx_id=0, det_size=(640, 640)); print('Model downloaded successfully')" || echo "Model will be downloaded on first run"
 
 # Environment
 ENV NODE_ENV=production
@@ -73,13 +47,18 @@ ENV FACE_API_URL=http://localhost:5001
 # Expose ports
 EXPOSE 3000 5001
 
-# Create startup script
+# Create startup script with better error handling
 RUN echo '#!/bin/bash\n\
+set -e\n\
 echo "Starting Face Recognition API..."\n\
 python python/face_api.py &\n\
-sleep 10\n\
+PYTHON_PID=$!\n\
+echo "Waiting for Face API to start..."\n\
+sleep 15\n\
 echo "Starting Web Server..."\n\
-node server/server.js\n\
+node server/server.js &\n\
+NODE_PID=$!\n\
+wait $PYTHON_PID $NODE_PID\n\
 ' > /app/start.sh && chmod +x /app/start.sh
 
 CMD ["/bin/bash", "/app/start.sh"]
