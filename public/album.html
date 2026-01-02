@@ -58,15 +58,24 @@
 
       <!-- Camera Container -->
       <div id="camera-container" style="display: none; margin-top: 20px;">
-        <div id="video-container">
-          <video id="video" autoplay muted playsinline></video>
+        <div id="video-wrapper" style="position: relative; display: inline-block; width: 100%; max-width: 400px; margin: 0 auto;">
+          <video id="video" autoplay muted playsinline style="width: 100%; border-radius: 15px;"></video>
+          <!-- Face guide overlay -->
+          <div class="face-guide-overlay">
+            <div class="face-guide-oval"></div>
+            <p class="face-guide-text">Đặt khuôn mặt vào khung</p>
+          </div>
+          <!-- Switch camera button -->
+          <button type="button" class="switch-camera-btn" onclick="switchCamera()" title="Đổi camera">
+            <i class="fas fa-sync-alt"></i>
+          </button>
         </div>
         <div style="text-align: center; margin-top: 15px;">
-          <button class="btn btn-primary" onclick="captureAndSearch()">
+          <button class="btn btn-primary btn-capture" onclick="captureAndSearch()">
             <i class="fas fa-camera"></i> Chụp & Tìm kiếm
           </button>
           <button class="btn btn-secondary" onclick="stopCamera()">
-            <i class="fas fa-times"></i> Đóng camera
+            <i class="fas fa-times"></i> Đóng
           </button>
         </div>
       </div>
@@ -187,6 +196,7 @@
     let albumPassword = ''; // Mật khẩu album (nếu có)
     let albumInfo = null; // Thông tin album
     let searchThreshold = 0.4; // Ngưỡng tìm kiếm mặc định
+    let currentFacingMode = 'user'; // 'user' = camera trước, 'environment' = camera sau
 
     function updateThreshold(value) {
       searchThreshold = value / 100;
@@ -294,6 +304,9 @@
       }
     };
 
+    let totalPhotosCount = 0;
+    let photoPagination = null;
+
     async function loadPhotos() {
       const loading = document.getElementById('loading');
       const noPhotos = document.getElementById('no-photos');
@@ -311,7 +324,8 @@
           headers['X-Album-Password'] = albumPassword;
         }
 
-        const res = await fetch(`${API_URL}/api/albums/${albumId}/photos`, { headers });
+        // Load first page to get total count
+        const res = await fetch(`${API_URL}/api/albums/${albumId}/photos?page=1&limit=200`, { headers });
         
         if (res.status === 401) {
           document.getElementById('password-modal').classList.add('active');
@@ -319,25 +333,69 @@
           return;
         }
 
-        allPhotos = await res.json();
+        const data = await res.json();
+        
+        // Handle both old format (array) and new format (with pagination)
+        if (Array.isArray(data)) {
+          allPhotos = data;
+          totalPhotosCount = data.length;
+        } else {
+          allPhotos = data.photos || [];
+          photoPagination = data.pagination;
+          totalPhotosCount = photoPagination ? photoPagination.total : allPhotos.length;
+          
+          // Load remaining pages if needed (for view all functionality)
+          if (photoPagination && photoPagination.hasMore && totalPhotosCount <= 2000) {
+            showProgress(20, `Đang tải ảnh... (${allPhotos.length}/${totalPhotosCount})`);
+            await loadRemainingPhotos(headers);
+          }
+        }
 
         loading.style.display = 'none';
+        hideProgress();
 
-        if (allPhotos.length === 0) {
+        if (totalPhotosCount === 0) {
           scanPrompt.style.display = 'none';
           noPhotos.style.display = 'block';
           return;
         }
 
-        photoCountInfo.textContent = `Album có ${allPhotos.length} ảnh`;
+        photoCountInfo.textContent = `Album có ${totalPhotosCount} ảnh`;
         viewAllSection.style.display = 'block';
         
         albumStats.innerHTML = `
-          <div class="stat-item"><i class="fas fa-image"></i> ${allPhotos.length} ảnh</div>
+          <div class="stat-item"><i class="fas fa-image"></i> ${totalPhotosCount} ảnh</div>
         `;
       } catch (err) {
         loading.style.display = 'none';
+        hideProgress();
         scanPrompt.innerHTML = `<div class="error-message">Lỗi tải ảnh: ${err.message}</div>`;
+      }
+    }
+
+    async function loadRemainingPhotos(headers) {
+      if (!photoPagination || !photoPagination.hasMore) return;
+      
+      let currentPage = 2;
+      const totalPages = photoPagination.totalPages;
+      
+      while (currentPage <= totalPages && allPhotos.length < 2000) {
+        try {
+          const res = await fetch(`${API_URL}/api/albums/${albumId}/photos?page=${currentPage}&limit=200`, { headers });
+          const data = await res.json();
+          
+          if (data.photos) {
+            allPhotos = allPhotos.concat(data.photos);
+          }
+          
+          const progress = Math.min(90, 20 + (currentPage / totalPages) * 70);
+          showProgress(progress, `Đang tải ảnh... (${allPhotos.length}/${totalPhotosCount})`);
+          
+          currentPage++;
+        } catch (err) {
+          console.error('Error loading page', currentPage, err);
+          break;
+        }
       }
     }
 
@@ -525,14 +583,37 @@
       const video = document.getElementById('video');
 
       try {
-        videoStream = await navigator.mediaDevices.getUserMedia({ 
-          video: { facingMode: 'user', width: 640, height: 480 } 
-        });
+        // Dừng stream cũ nếu có
+        if (videoStream) {
+          videoStream.getTracks().forEach(track => track.stop());
+        }
+        
+        const constraints = {
+          video: {
+            facingMode: currentFacingMode,
+            width: { ideal: 640 },
+            height: { ideal: 480 }
+          }
+        };
+        
+        videoStream = await navigator.mediaDevices.getUserMedia(constraints);
         video.srcObject = videoStream;
         cameraContainer.style.display = 'block';
       } catch (err) {
-        alert('Không thể truy cập camera: ' + err.message);
+        // Fallback nếu không hỗ trợ facingMode
+        try {
+          videoStream = await navigator.mediaDevices.getUserMedia({ video: true });
+          video.srcObject = videoStream;
+          cameraContainer.style.display = 'block';
+        } catch (fallbackErr) {
+          alert('Không thể truy cập camera: ' + fallbackErr.message);
+        }
       }
+    }
+
+    function switchCamera() {
+      currentFacingMode = currentFacingMode === 'user' ? 'environment' : 'user';
+      startCamera();
     }
 
     function stopCamera() {

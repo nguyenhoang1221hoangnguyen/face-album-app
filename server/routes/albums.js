@@ -3,7 +3,7 @@ const { google } = require('googleapis');
 const bcrypt = require('bcryptjs');
 const { db } = require('../database');
 const authMiddleware = require('../middleware/auth');
-const { searchLimiter, syncLimiter, passwordLimiter } = require('../middleware/rateLimiter');
+const { searchLimiter, syncLimiter, passwordLimiter, photosLimiter } = require('../middleware/rateLimiter');
 const { validate, createAlbumSchema, updateAlbumSchema, verifyPasswordSchema, searchSchema } = require('../middleware/validator');
 const { getCache, setCache, deleteCache, CACHE_KEYS, CACHE_TTL } = require('../redis');
 const { addEncodingJob, getEncodingStatus } = require('../queue');
@@ -34,38 +34,57 @@ async function fetchDrivePhotos(folderId, apiKey, includeSubfolders = true) {
   async function fetchFromFolder(currentFolderId, folderName = 'root') {
     console.log(`Fetching photos from folder: ${folderName} (${currentFolderId})`);
     
-    const photosResponse = await drive.files.list({
-      q: `'${currentFolderId}' in parents and mimeType contains 'image/'`,
-      fields: 'files(id, name, thumbnailLink, webContentLink)',
-      pageSize: 1000,
-      key: apiKey
-    });
-
-    const photos = photosResponse.data.files.map(file => ({
-      drive_file_id: file.id,
-      name: file.name,
-      thumbnail_url: file.thumbnailLink,
-      full_url: `https://drive.google.com/uc?export=view&id=${file.id}`,
-      folder: folderName
-    }));
+    let pageToken = null;
+    let folderPhotos = [];
     
-    console.log(`  Found ${photos.length} photos in ${folderName}`);
-    allPhotos = allPhotos.concat(photos);
-
-    if (includeSubfolders) {
-      const foldersResponse = await drive.files.list({
-        q: `'${currentFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder'`,
-        fields: 'files(id, name)',
-        pageSize: 100,
+    // Fetch all pages of photos
+    do {
+      const photosResponse = await drive.files.list({
+        q: `'${currentFolderId}' in parents and mimeType contains 'image/' and trashed = false`,
+        fields: 'nextPageToken, files(id, name, thumbnailLink, webContentLink)',
+        pageSize: 1000,
+        pageToken: pageToken,
         key: apiKey
       });
 
-      const subfolders = foldersResponse.data.files;
-      console.log(`  Found ${subfolders.length} subfolders in ${folderName}`);
+      const photos = photosResponse.data.files.map(file => ({
+        drive_file_id: file.id,
+        name: file.name,
+        thumbnail_url: file.thumbnailLink,
+        full_url: `https://drive.google.com/uc?export=view&id=${file.id}`,
+        folder: folderName
+      }));
+      
+      folderPhotos = folderPhotos.concat(photos);
+      pageToken = photosResponse.data.nextPageToken;
+      
+      console.log(`  Fetched ${photos.length} photos (total: ${folderPhotos.length})`);
+    } while (pageToken);
+    
+    console.log(`  Found ${folderPhotos.length} photos in ${folderName}`);
+    allPhotos = allPhotos.concat(folderPhotos);
 
-      for (const subfolder of subfolders) {
-        await fetchFromFolder(subfolder.id, subfolder.name);
-      }
+    if (includeSubfolders) {
+      let subfolderToken = null;
+      
+      do {
+        const foldersResponse = await drive.files.list({
+          q: `'${currentFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+          fields: 'nextPageToken, files(id, name)',
+          pageSize: 100,
+          pageToken: subfolderToken,
+          key: apiKey
+        });
+
+        const subfolders = foldersResponse.data.files;
+        console.log(`  Found ${subfolders.length} subfolders in ${folderName}`);
+
+        for (const subfolder of subfolders) {
+          await fetchFromFolder(subfolder.id, subfolder.name);
+        }
+        
+        subfolderToken = foldersResponse.data.nextPageToken;
+      } while (subfolderToken);
     }
   }
 
@@ -83,7 +102,10 @@ async function encodeFacesForAlbum(albumId, photos) {
     return { queued: true, job_id: job.id };
   }
   
-  // Direct call to Face API
+  // Direct call to Face API with timeout
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 minutes timeout for encoding
+  
   try {
     console.log(`Starting face encoding for album ${albumId} with ${photos.length} photos...`);
     const response = await fetch(`${FACE_API_URL}/encode-album`, {
@@ -95,8 +117,10 @@ async function encodeFacesForAlbum(albumId, photos) {
           id: p.id, 
           url: p.thumbnail_url ? p.thumbnail_url.replace('=s220', '=s800') : p.full_url 
         }))
-      })
+      }),
+      signal: controller.signal
     });
+    clearTimeout(timeoutId);
     const result = await response.json();
     console.log(`Face encoding completed for album ${albumId}:`, result);
     
@@ -105,6 +129,11 @@ async function encodeFacesForAlbum(albumId, photos) {
     
     return result;
   } catch (err) {
+    clearTimeout(timeoutId);
+    if (err.name === 'AbortError') {
+      console.error('Face encoding timeout for album:', albumId);
+      return { error: 'Encoding timeout' };
+    }
     console.error('Error encoding faces:', err.message);
     return { error: err.message };
   }
@@ -112,6 +141,9 @@ async function encodeFacesForAlbum(albumId, photos) {
 
 // Incremental encoding - chỉ encode ảnh mới và merge với encodings cũ
 async function encodeNewPhotos(albumId, newPhotos) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 minutes timeout
+  
   try {
     console.log(`Starting incremental encoding for album ${albumId} with ${newPhotos.length} new photos...`);
     
@@ -124,8 +156,10 @@ async function encodeNewPhotos(albumId, newPhotos) {
           id: p.id, 
           url: p.thumbnail_url ? p.thumbnail_url.replace('=s220', '=s800') : p.full_url 
         }))
-      })
+      }),
+      signal: controller.signal
     });
+    clearTimeout(timeoutId);
     
     const result = await response.json();
     console.log(`Incremental encoding completed for album ${albumId}:`, result);
@@ -135,6 +169,11 @@ async function encodeNewPhotos(albumId, newPhotos) {
     
     return result;
   } catch (err) {
+    clearTimeout(timeoutId);
+    if (err.name === 'AbortError') {
+      console.error('Incremental encoding timeout for album:', albumId);
+      return { error: 'Encoding timeout' };
+    }
     console.error('Error in incremental encoding:', err.message);
     // Fallback to full encoding if incremental fails
     return encodeFacesForAlbum(albumId, newPhotos);
@@ -143,6 +182,9 @@ async function encodeNewPhotos(albumId, newPhotos) {
 
 // Xóa encodings của các ảnh đã bị xóa
 async function removePhotoEncodings(albumId, photoIds) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
+  
   try {
     const response = await fetch(`${FACE_API_URL}/remove-photos`, {
       method: 'POST',
@@ -150,8 +192,10 @@ async function removePhotoEncodings(albumId, photoIds) {
       body: JSON.stringify({
         album_id: albumId,
         photo_ids: photoIds
-      })
+      }),
+      signal: controller.signal
     });
+    clearTimeout(timeoutId);
     
     const result = await response.json();
     console.log(`Removed encodings for ${photoIds.length} photos:`, result);
@@ -160,6 +204,11 @@ async function removePhotoEncodings(albumId, photoIds) {
     
     return result;
   } catch (err) {
+    clearTimeout(timeoutId);
+    if (err.name === 'AbortError') {
+      console.error('Remove encodings timeout for album:', albumId);
+      return { error: 'Remove encodings timeout' };
+    }
     console.error('Error removing photo encodings:', err.message);
     return { error: err.message };
   }
@@ -207,8 +256,8 @@ router.post('/:id/verify-password', passwordLimiter, validate(verifyPasswordSche
   res.json({ success: true });
 });
 
-// GET photos in album
-router.get('/:id/photos', async (req, res) => {
+// GET photos in album with pagination
+router.get('/:id/photos', photosLimiter, async (req, res) => {
   const album = db.prepare('SELECT * FROM albums WHERE id = ?').get(req.params.id);
   if (!album) {
     return res.status(404).json({ error: 'Album không tồn tại' });
@@ -222,19 +271,30 @@ router.get('/:id/photos', async (req, res) => {
     }
   }
 
-  // Try cache first
-  const cacheKey = CACHE_KEYS.ALBUM_PHOTOS(req.params.id);
-  const cached = await getCache(cacheKey);
-  if (cached) {
-    return res.json(cached);
-  }
+  // Pagination params
+  const page = Math.max(1, parseInt(req.query.page) || 1);
+  const limit = Math.min(200, Math.max(1, parseInt(req.query.limit) || 100));
+  const offset = (page - 1) * limit;
 
-  const photos = db.prepare('SELECT * FROM photos WHERE album_id = ?').all(req.params.id);
-  
-  // Cache for 1 hour
-  await setCache(cacheKey, photos, CACHE_TTL.PHOTOS);
-  
-  res.json(photos);
+  // Get total count
+  const totalResult = db.prepare('SELECT COUNT(*) as total FROM photos WHERE album_id = ?').get(req.params.id);
+  const total = totalResult.total;
+  const totalPages = Math.ceil(total / limit);
+
+  // Get paginated photos
+  const photos = db.prepare('SELECT * FROM photos WHERE album_id = ? ORDER BY id LIMIT ? OFFSET ?')
+    .all(req.params.id, limit, offset);
+
+  res.json({
+    photos,
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages,
+      hasMore: page < totalPages
+    }
+  });
 });
 
 // GET encoding status
@@ -280,15 +340,27 @@ router.post('/', authMiddleware, validate(createAlbumSchema), async (req, res) =
       try {
         const photos = await fetchDrivePhotos(folderId, process.env.GOOGLE_API_KEY);
         
-        const insertPhoto = db.prepare(`
-          INSERT INTO photos (album_id, drive_file_id, name, thumbnail_url, full_url) 
-          VALUES (?, ?, ?, ?, ?)
-        `);
-
+        // Batch insert photos (100 at a time)
+        const BATCH_SIZE = 100;
         const insertedPhotos = [];
-        for (const photo of photos) {
-          const photoResult = insertPhoto.run(albumId, photo.drive_file_id, photo.name, photo.thumbnail_url, photo.full_url);
-          insertedPhotos.push({ id: photoResult.lastInsertRowid, full_url: photo.full_url, thumbnail_url: photo.thumbnail_url });
+
+        const insertManyPhotos = db.transaction((photoBatch, albumIdParam) => {
+          const insertPhoto = db.prepare(`
+            INSERT INTO photos (album_id, drive_file_id, name, thumbnail_url, full_url) 
+            VALUES (?, ?, ?, ?, ?)
+          `);
+          
+          for (const photo of photoBatch) {
+            const result = insertPhoto.run(albumIdParam, photo.drive_file_id, photo.name, photo.thumbnail_url, photo.full_url);
+            insertedPhotos.push({ id: result.lastInsertRowid, full_url: photo.full_url, thumbnail_url: photo.thumbnail_url });
+          }
+        });
+
+        // Process in batches
+        for (let i = 0; i < photos.length; i += BATCH_SIZE) {
+          const batch = photos.slice(i, i + BATCH_SIZE);
+          insertManyPhotos(batch, albumId);
+          console.log(`Inserted batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(photos.length/BATCH_SIZE)}`);
         }
 
         if (photos.length > 0) {
@@ -446,6 +518,10 @@ router.post('/:id/search', searchLimiter, validate(searchSchema), async (req, re
   const { image, threshold } = req.body;
   const albumId = req.params.id;
 
+  // Thêm timeout cho fetch
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
+
   try {
     const response = await fetch(`${FACE_API_URL}/search`, {
       method: 'POST',
@@ -454,8 +530,10 @@ router.post('/:id/search', searchLimiter, validate(searchSchema), async (req, re
         album_id: albumId,
         image: image,
         threshold: threshold || 0.4
-      })
+      }),
+      signal: controller.signal
     });
+    clearTimeout(timeoutId);
 
     const result = await response.json();
 
@@ -478,6 +556,10 @@ router.post('/:id/search', searchLimiter, validate(searchSchema), async (req, re
 
     res.json({ photos: [], total: 0, face_bboxes: result.face_bboxes || [] });
   } catch (err) {
+    clearTimeout(timeoutId);
+    if (err.name === 'AbortError') {
+      return res.status(504).json({ error: 'Timeout: Face API không phản hồi' });
+    }
     console.error('Error searching faces:', err);
     res.status(500).json({ error: 'Lỗi tìm kiếm: Face Recognition API không khả dụng' });
   }

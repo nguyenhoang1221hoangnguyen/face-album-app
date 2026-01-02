@@ -3,12 +3,13 @@ const rateLimit = require('express-rate-limit');
 // General API rate limiter
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // 100 requests per windowMs
+  max: 200, // 200 requests per windowMs (tăng từ 100)
   message: {
     error: 'Quá nhiều request, vui lòng thử lại sau 15 phút'
   },
   standardHeaders: true,
-  legacyHeaders: false
+  legacyHeaders: false,
+  skip: (req) => req.path === '/health' // Skip health check
 });
 
 // Strict limiter for authentication
@@ -23,10 +24,10 @@ const authLimiter = rateLimit({
   skipSuccessfulRequests: true
 });
 
-// Limiter for face search (resource intensive)
+// Limiter for face search (resource intensive) - per IP
 const searchLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
-  max: 10, // 10 searches per minute
+  max: 20, // 20 searches per minute (tăng từ 10)
   message: {
     error: 'Quá nhiều tìm kiếm, vui lòng thử lại sau 1 phút'
   },
@@ -57,10 +58,22 @@ const passwordLimiter = rateLimit({
   skipSuccessfulRequests: true
 });
 
+// Limiter for photos endpoint (prevent abuse)
+const photosLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 60, // 60 requests per minute
+  message: {
+    error: 'Quá nhiều request, vui lòng chờ 1 phút'
+  },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
 module.exports = {
   apiLimiter,
   authLimiter,
   searchLimiter,
   syncLimiter,
-  passwordLimiter
+  passwordLimiter,
+  photosLimiter
 };

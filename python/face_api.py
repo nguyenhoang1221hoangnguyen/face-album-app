@@ -30,6 +30,10 @@ PORT = int(os.environ.get('PORT', 5001))
 MAX_WORKERS = int(os.environ.get('MAX_WORKERS', 4))
 BATCH_SIZE = int(os.environ.get('BATCH_SIZE', 10))
 
+# Semaphore to limit concurrent face processing
+MAX_CONCURRENT_REQUESTS = int(os.environ.get('MAX_CONCURRENT_REQUESTS', 5))
+request_semaphore = threading.Semaphore(MAX_CONCURRENT_REQUESTS)
+
 ENCODINGS_DIR = os.environ.get('ENCODINGS_DIR', os.path.join(os.path.dirname(__file__), '..', 'data', 'encodings'))
 STATUS_DIR = os.environ.get('STATUS_DIR', os.path.join(os.path.dirname(__file__), '..', 'data', 'status'))
 os.makedirs(ENCODINGS_DIR, exist_ok=True)
@@ -229,95 +233,103 @@ def get_encoding_status(album_id):
 @app.route('/encode-album', methods=['POST'])
 def encode_album():
     """Encode album with parallel processing"""
-    data = request.json
-    album_id = data.get('album_id')
-    photos = data.get('photos', [])
+    # Acquire semaphore with timeout
+    acquired = request_semaphore.acquire(timeout=30)
+    if not acquired:
+        return jsonify({'error': 'Server đang bận, vui lòng thử lại sau'}), 503
     
-    if not album_id or not photos:
-        return jsonify({'error': 'Missing album_id or photos'}), 400
-    
-    print(f"🚀 Encoding album {album_id} with {len(photos)} photos (workers: {MAX_WORKERS})...")
-    start_time = time.time()
-    
-    all_encodings = []
-    processed = 0
-    failed = 0
-    
-    update_status(album_id, 'encoding', 0, len(photos), 0)
-    
-    # Process in batches
-    for batch_start in range(0, len(photos), BATCH_SIZE):
-        batch = photos[batch_start:batch_start + BATCH_SIZE]
-        batch_num = batch_start // BATCH_SIZE + 1
-        total_batches = (len(photos) + BATCH_SIZE - 1) // BATCH_SIZE
+    try:
+        data = request.json
+        album_id = data.get('album_id')
+        photos = data.get('photos', [])
         
-        print(f"  Batch {batch_num}/{total_batches}: Downloading {len(batch)} images...")
+        if not album_id or not photos:
+            return jsonify({'error': 'Missing album_id or photos'}), 400
         
-        # Download batch asynchronously
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        download_results = loop.run_until_complete(download_batch_async(batch))
-        loop.close()
+        print(f"🚀 Encoding album {album_id} with {len(photos)} photos (workers: {MAX_WORKERS})...")
+        start_time = time.time()
         
-        # Prepare for parallel encoding
-        images_to_process = []
-        for photo_id, image_bytes, error in download_results:
-            if error:
-                failed += 1
-            else:
-                images_to_process.append((photo_id, image_bytes))
+        all_encodings = []
+        processed = 0
+        failed = 0
         
-        # Process images in parallel using ThreadPool
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            futures = [executor.submit(process_image_for_encoding, args) for args in images_to_process]
+        update_status(album_id, 'encoding', 0, len(photos), 0)
+        
+        # Process in batches
+        for batch_start in range(0, len(photos), BATCH_SIZE):
+            batch = photos[batch_start:batch_start + BATCH_SIZE]
+            batch_num = batch_start // BATCH_SIZE + 1
+            total_batches = (len(photos) + BATCH_SIZE - 1) // BATCH_SIZE
             
-            for future in as_completed(futures):
-                photo_id, results, error = future.result()
+            print(f"  Batch {batch_num}/{total_batches}: Downloading {len(batch)} images...")
+            
+            # Download batch asynchronously
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            download_results = loop.run_until_complete(download_batch_async(batch))
+            loop.close()
+            
+            # Prepare for parallel encoding
+            images_to_process = []
+            for photo_id, image_bytes, error in download_results:
                 if error:
                     failed += 1
-                elif results:
-                    all_encodings.extend(results)
-                    processed += 1
                 else:
-                    failed += 1
+                    images_to_process.append((photo_id, image_bytes))
+            
+            # Process images in parallel using ThreadPool
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                futures = [executor.submit(process_image_for_encoding, args) for args in images_to_process]
+                
+                for future in as_completed(futures):
+                    photo_id, results, error = future.result()
+                    if error:
+                        failed += 1
+                    elif results:
+                        all_encodings.extend(results)
+                        processed += 1
+                    else:
+                        failed += 1
+            
+            # Update status
+            current_processed = batch_start + len(batch)
+            update_status(
+                album_id, 'encoding', 
+                current_processed, len(photos), 
+                len(all_encodings),
+                current_photo=f"Batch {batch_num}/{total_batches}"
+            )
+            
+            print(f"  Batch {batch_num} done: {len(all_encodings)} faces found")
         
-        # Update status
-        current_processed = batch_start + len(batch)
-        update_status(
-            album_id, 'encoding', 
-            current_processed, len(photos), 
-            len(all_encodings),
-            current_photo=f"Batch {batch_num}/{total_batches}"
-        )
+        # Save encodings
+        encoding_path = get_encoding_path(album_id)
+        with open(encoding_path, 'w') as f:
+            json.dump(all_encodings, f)
         
-        print(f"  Batch {batch_num} done: {len(all_encodings)} faces found")
-    
-    # Save encodings
-    encoding_path = get_encoding_path(album_id)
-    with open(encoding_path, 'w') as f:
-        json.dump(all_encodings, f)
-    
-    # Update cache
-    with cache_lock:
-        encodings_cache[album_id] = all_encodings
-        if FAISS_AVAILABLE and all_encodings:
-            embeddings = [np.array(e['embedding']) for e in all_encodings]
-            faiss_indexes[album_id] = build_faiss_index(embeddings)
-    
-    # Final status
-    elapsed = time.time() - start_time
-    update_status(album_id, 'completed', len(photos), len(photos), len(all_encodings))
-    
-    print(f"✅ Album {album_id} complete: {processed} photos, {len(all_encodings)} faces in {elapsed:.1f}s")
-    
-    return jsonify({
-        'success': True,
-        'album_id': album_id,
-        'processed': processed,
-        'failed': failed,
-        'total_faces': len(all_encodings),
-        'elapsed_seconds': round(elapsed, 1)
-    })
+        # Update cache
+        with cache_lock:
+            encodings_cache[album_id] = all_encodings
+            if FAISS_AVAILABLE and all_encodings:
+                embeddings = [np.array(e['embedding']) for e in all_encodings]
+                faiss_indexes[album_id] = build_faiss_index(embeddings)
+        
+        # Final status
+        elapsed = time.time() - start_time
+        update_status(album_id, 'completed', len(photos), len(photos), len(all_encodings))
+        
+        print(f"✅ Album {album_id} complete: {processed} photos, {len(all_encodings)} faces in {elapsed:.1f}s")
+        
+        return jsonify({
+            'success': True,
+            'album_id': album_id,
+            'processed': processed,
+            'failed': failed,
+            'total_faces': len(all_encodings),
+            'elapsed_seconds': round(elapsed, 1)
+        })
+    finally:
+        request_semaphore.release()
 
 @app.route('/encode-incremental', methods=['POST'])
 def encode_incremental():
@@ -442,103 +454,111 @@ def remove_photos_from_encodings():
 @app.route('/search', methods=['POST'])
 def search_faces():
     """Search for matching faces with adjustable threshold"""
-    data = request.json
-    album_id = data.get('album_id')
-    image_base64 = data.get('image')
-    threshold = float(data.get('threshold', 0.4))
-    search_all_faces = data.get('search_all_faces', False)
+    # Acquire semaphore with timeout
+    acquired = request_semaphore.acquire(timeout=30)
+    if not acquired:
+        return jsonify({'error': 'Server đang bận, vui lòng thử lại sau'}), 503
     
-    if not album_id or not image_base64:
-        return jsonify({'error': 'Missing album_id or image'}), 400
-    
-    # Load encodings
-    album_encodings = load_album_encodings(album_id)
-    if not album_encodings:
-        return jsonify({'error': 'Album chưa được xử lý. Vui lòng sync album trước.'}), 400
-    
-    # Load user image
-    user_image = load_image_from_base64(image_base64)
-    if user_image is None:
-        return jsonify({'error': 'Không thể đọc ảnh'}), 400
-    
-    # Get face embedding(s) from user image
     try:
-        if search_all_faces:
-            user_faces = get_face_embeddings(user_image)
-            if not user_faces:
-                return jsonify({'error': 'Không tìm thấy khuôn mặt trong ảnh'}), 400
-            user_embeddings = [emb for emb, bbox in user_faces]
-            face_bboxes = [bbox for emb, bbox in user_faces]
+        data = request.json
+        album_id = data.get('album_id')
+        image_base64 = data.get('image')
+        threshold = float(data.get('threshold', 0.4))
+        search_all_faces = data.get('search_all_faces', False)
+        
+        if not album_id or not image_base64:
+            return jsonify({'error': 'Missing album_id or image'}), 400
+        
+        # Load encodings
+        album_encodings = load_album_encodings(album_id)
+        if not album_encodings:
+            return jsonify({'error': 'Album chưa được xử lý. Vui lòng sync album trước.'}), 400
+        
+        # Load user image
+        user_image = load_image_from_base64(image_base64)
+        if user_image is None:
+            return jsonify({'error': 'Không thể đọc ảnh'}), 400
+        
+        # Get face embedding(s) from user image
+        try:
+            if search_all_faces:
+                user_faces = get_face_embeddings(user_image)
+                if not user_faces:
+                    return jsonify({'error': 'Không tìm thấy khuôn mặt trong ảnh'}), 400
+                user_embeddings = [emb for emb, bbox in user_faces]
+                face_bboxes = [bbox for emb, bbox in user_faces]
+            else:
+                user_embedding, bbox = get_largest_face_embedding(user_image)
+                if user_embedding is None:
+                    return jsonify({'error': 'Không tìm thấy khuôn mặt trong ảnh'}), 400
+                user_embeddings = [user_embedding]
+                face_bboxes = [bbox] if bbox else []
+            
+            print(f"🔍 Searching {len(user_embeddings)} face(s) in {len(album_encodings)} encodings...")
+        except Exception as e:
+            return jsonify({'error': f'Lỗi nhận diện: {str(e)}'}), 500
+        
+        matched_photo_ids = set()
+        match_details = []
+        max_similarity = 0.0
+        
+        start_time = time.time()
+        
+        # Use FAISS for fast search if available
+        if FAISS_AVAILABLE and album_id in faiss_indexes:
+            index = faiss_indexes[album_id]
+            
+            for user_emb in user_embeddings:
+                # Normalize query vector
+                query = np.array([user_emb]).astype('float32')
+                faiss.normalize_L2(query)
+                
+                # Search top-k matches
+                k = min(100, len(album_encodings))
+                similarities, indices = index.search(query, k)
+                
+                for sim, idx in zip(similarities[0], indices[0]):
+                    if sim > threshold:
+                        photo_id = album_encodings[idx]['photo_id']
+                        matched_photo_ids.add(photo_id)
+                        match_details.append({
+                            'photo_id': photo_id,
+                            'similarity': round(float(sim), 3)
+                        })
+                    max_similarity = max(max_similarity, sim)
         else:
-            user_embedding, bbox = get_largest_face_embedding(user_image)
-            if user_embedding is None:
-                return jsonify({'error': 'Không tìm thấy khuôn mặt trong ảnh'}), 400
-            user_embeddings = [user_embedding]
-            face_bboxes = [bbox] if bbox else []
+            # Fallback to numpy search
+            for user_emb in user_embeddings:
+                for item in album_encodings:
+                    photo_id = item['photo_id']
+                    embedding = np.array(item['embedding'])
+                    
+                    similarity = cosine_similarity(user_emb, embedding)
+                    max_similarity = max(max_similarity, similarity)
+                    
+                    if similarity > threshold:
+                        matched_photo_ids.add(photo_id)
+                        match_details.append({
+                            'photo_id': photo_id,
+                            'similarity': round(similarity, 3)
+                        })
         
-        print(f"🔍 Searching {len(user_embeddings)} face(s) in {len(album_encodings)} encodings...")
-    except Exception as e:
-        return jsonify({'error': f'Lỗi nhận diện: {str(e)}'}), 500
-    
-    matched_photo_ids = set()
-    match_details = []
-    max_similarity = 0.0
-    
-    start_time = time.time()
-    
-    # Use FAISS for fast search if available
-    if FAISS_AVAILABLE and album_id in faiss_indexes:
-        index = faiss_indexes[album_id]
+        elapsed = time.time() - start_time
+        print(f"✅ Search complete: {len(matched_photo_ids)} matches, max_sim: {max_similarity:.3f}, time: {elapsed:.3f}s")
         
-        for user_emb in user_embeddings:
-            # Normalize query vector
-            query = np.array([user_emb]).astype('float32')
-            faiss.normalize_L2(query)
-            
-            # Search top-k matches
-            k = min(100, len(album_encodings))
-            similarities, indices = index.search(query, k)
-            
-            for sim, idx in zip(similarities[0], indices[0]):
-                if sim > threshold:
-                    photo_id = album_encodings[idx]['photo_id']
-                    matched_photo_ids.add(photo_id)
-                    match_details.append({
-                        'photo_id': photo_id,
-                        'similarity': round(float(sim), 3)
-                    })
-                max_similarity = max(max_similarity, sim)
-    else:
-        # Fallback to numpy search
-        for user_emb in user_embeddings:
-            for item in album_encodings:
-                photo_id = item['photo_id']
-                embedding = np.array(item['embedding'])
-                
-                similarity = cosine_similarity(user_emb, embedding)
-                max_similarity = max(max_similarity, similarity)
-                
-                if similarity > threshold:
-                    matched_photo_ids.add(photo_id)
-                    match_details.append({
-                        'photo_id': photo_id,
-                        'similarity': round(similarity, 3)
-                    })
-    
-    elapsed = time.time() - start_time
-    print(f"✅ Search complete: {len(matched_photo_ids)} matches, max_sim: {max_similarity:.3f}, time: {elapsed:.3f}s")
-    
-    return jsonify({
-        'success': True,
-        'matched_photo_ids': list(matched_photo_ids),
-        'total_matches': len(matched_photo_ids),
-        'max_similarity': round(float(max_similarity), 3),
-        'threshold_used': threshold,
-        'faces_detected': len(user_embeddings),
-        'face_bboxes': face_bboxes,
-        'search_time_ms': round(elapsed * 1000, 1),
-        'search_method': 'faiss' if (FAISS_AVAILABLE and album_id in faiss_indexes) else 'numpy'
-    })
+        return jsonify({
+            'success': True,
+            'matched_photo_ids': list(matched_photo_ids),
+            'total_matches': len(matched_photo_ids),
+            'max_similarity': round(float(max_similarity), 3),
+            'threshold_used': threshold,
+            'faces_detected': len(user_embeddings),
+            'face_bboxes': face_bboxes,
+            'search_time_ms': round(elapsed * 1000, 1),
+            'search_method': 'faiss' if (FAISS_AVAILABLE and album_id in faiss_indexes) else 'numpy'
+        })
+    finally:
+        request_semaphore.release()
 
 @app.route('/detect', methods=['POST'])
 def detect_face():
