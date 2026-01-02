@@ -41,7 +41,8 @@ RUN python -c "from insightface.app import FaceAnalysis; app = FaceAnalysis(name
 
 # Environment
 ENV NODE_ENV=production
-ENV PORT=3000
+ENV FACE_API_PORT=5001
+ENV WEB_PORT=3000
 ENV FACE_API_URL=http://localhost:5001
 
 # Expose ports
@@ -51,12 +52,12 @@ EXPOSE 3000 5001
 RUN echo '#!/bin/bash\n\
 set -e\n\
 echo "Starting Face Recognition API..."\n\
-python python/face_api.py &\n\
+PORT=$FACE_API_PORT python python/face_api.py &\n\
 PYTHON_PID=$!\n\
 echo "Waiting for Face API to start..."\n\
 sleep 15\n\
 echo "Starting Web Server..."\n\
-node server/server.js &\n\
+PORT=$WEB_PORT node server/server.js &\n\
 NODE_PID=$!\n\
 wait $PYTHON_PID $NODE_PID\n\
 ' > /app/start.sh && chmod +x /app/start.sh
