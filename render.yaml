@@ -1,0 +1,59 @@
+# Render Blueprint - Face Album App
+# https://render.com/docs/blueprint-spec
+
+services:
+  # Node.js Web Server
+  - type: web
+    name: face-album-web
+    runtime: node
+    region: singapore
+    plan: free
+    buildCommand: npm install
+    startCommand: node server/server.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        sync: false # User will set this manually
+      - key: GOOGLE_API_KEY
+        sync: false # User will set this manually
+      - key: FACE_API_URL
+        fromService:
+          name: face-album-api
+          type: pserver
+          property: hostport
+      - key: REDIS_URL
+        fromService:
+          name: face-album-redis
+          type: redis
+          property: connectionString
+
+  # Python Face Recognition API (Private Service)
+  - type: pserver
+    name: face-album-api
+    runtime: python
+    region: singapore
+    plan: free
+    buildCommand: pip install -r python/requirements.txt
+    startCommand: python python/face_api.py
+    envVars:
+      - key: PORT
+        value: 5001
+    disk:
+      name: face-data
+      mountPath: /app/data
+      sizeGB: 1
+
+  # Redis Cache
+  - type: redis
+    name: face-album-redis
+    region: singapore
+    plan: free
+    maxmemoryPolicy: allkeys-lru

@@ -13,8 +13,11 @@ from insightface.app import FaceAnalysis
 app = Flask(__name__)
 CORS(app)
 
-ENCODINGS_DIR = os.path.join(os.path.dirname(__file__), '..', 'data', 'encodings')
-STATUS_DIR = os.path.join(os.path.dirname(__file__), '..', 'data', 'status')
+# Get port from environment (for Render)
+PORT = int(os.environ.get('PORT', 5001))
+
+ENCODINGS_DIR = os.environ.get('ENCODINGS_DIR', os.path.join(os.path.dirname(__file__), '..', 'data', 'encodings'))
+STATUS_DIR = os.environ.get('STATUS_DIR', os.path.join(os.path.dirname(__file__), '..', 'data', 'status'))
 os.makedirs(ENCODINGS_DIR, exist_ok=True)
 os.makedirs(STATUS_DIR, exist_ok=True)
 
@@ -283,8 +286,9 @@ def detect_face():
 
 if __name__ == '__main__':
     print("🔍 Face Recognition API (InsightFace/ArcFace) starting...")
+    print(f"📍 Port: {PORT}")
     print("📍 Endpoints:")
     print("   POST /encode-album - Pre-process album faces")
     print("   POST /search - Search for matching faces")
     print("   POST /detect - Detect faces in image")
-    app.run(host='0.0.0.0', port=5001, debug=False)
+    app.run(host='0.0.0.0', port=PORT, debug=False)
