@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Face Album - Tìm ảnh của bạn</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <h1><i class="fas fa-images"></i> Face Album</h1>
+      <p>Tìm ảnh của bạn bằng nhận diện khuôn mặt</p>
+    </header>
+
+    <div id="loading" class="loading" style="display: none;">
+      <div class="spinner"></div>
+      <p>Đang tải...</p>
+    </div>
+
+    <div id="albums-container" class="albums-grid"></div>
+
+    <div id="no-albums" class="no-results" style="display: none;">
+      <i class="fas fa-folder-open" style="font-size: 4rem; color: #ddd; margin-bottom: 20px;"></i>
+      <h2>Chưa có album nào</h2>
+      <p>Hãy liên hệ admin để tạo album</p>
+    </div>
+  </div>
+
+  <script>
+    const API_URL = '';
+
+    async function loadAlbums() {
+      const loading = document.getElementById('loading');
+      const container = document.getElementById('albums-container');
+      const noAlbums = document.getElementById('no-albums');
+
+      loading.style.display = 'block';
+      container.innerHTML = '';
+
+      try {
+        const res = await fetch(`${API_URL}/api/albums`);
+        const albums = await res.json();
+
+        loading.style.display = 'none';
+
+        if (albums.length === 0) {
+          noAlbums.style.display = 'block';
+          return;
+        }
+
+        albums.forEach(album => {
+          const card = document.createElement('div');
+          card.className = 'card album-card';
+          card.innerHTML = `
+            <div class="thumbnail">
+              ${album.thumbnail 
+                ? `<img src="${album.thumbnail}" alt="${album.name}" onerror="this.parentElement.innerHTML='<i class=\\'fas fa-images\\'></i>'">`
+                : '<i class="fas fa-images"></i>'
+              }
+            </div>
+            <div class="info">
+              <h3>${album.name}</h3>
+              <p>${album.description || 'Không có mô tả'}</p>
+              <div class="meta">
+                <span><i class="fas fa-image"></i> ${album.photo_count || 0} ảnh</span>
+                <span><i class="fas fa-calendar"></i> ${new Date(album.created_at).toLocaleDateString('vi-VN')}</span>
+              </div>
+            </div>
+          `;
+          card.onclick = () => window.location.href = `/album/${album.id}`;
+          container.appendChild(card);
+        });
+      } catch (err) {
+        loading.style.display = 'none';
+        container.innerHTML = `<div class="error-message">Lỗi tải albums: ${err.message}</div>`;
+      }
+    }
+
+    loadAlbums();
+  </script>
+</body>
+</html>

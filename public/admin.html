@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin - Face Album</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+  <!-- Login Form -->
+  <div id="login-section" class="login-container">
+    <div class="login-box">
+      <div class="logo">🔐</div>
+      <h1>Admin Login</h1>
+      <div id="login-error" class="error-message" style="display: none;"></div>
+      <form id="login-form">
+        <div class="form-group">
+          <label for="username">Username</label>
+          <input type="text" id="username" name="username" required>
+        </div>
+        <div class="form-group">
+          <label for="password">Password</label>
+          <input type="password" id="password" name="password" required>
+        </div>
+        <button type="submit" class="btn btn-primary" style="width: 100%;">
+          <i class="fas fa-sign-in-alt"></i> Đăng nhập
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Admin Dashboard -->
+  <div id="admin-section" class="container" style="display: none;">
+    <header class="header">
+      <h1><i class="fas fa-cog"></i> Admin Panel</h1>
+      <div class="admin-actions">
+        <button class="btn btn-primary" onclick="showCreateModal()">
+          <i class="fas fa-plus"></i> Tạo Album
+        </button>
+        <button class="btn btn-secondary" onclick="logout()">
+          <i class="fas fa-sign-out-alt"></i> Đăng xuất
+        </button>
+      </div>
+    </header>
+
+    <div id="message" style="display: none;"></div>
+
+    <div id="loading" class="loading" style="display: none;">
+      <div class="spinner"></div>
+      <p>Đang tải...</p>
+    </div>
+
+    <div id="albums-container" class="albums-grid"></div>
+  </div>
+
+  <!-- Create/Edit Album Modal -->
+  <div id="album-modal" class="modal-overlay">
+    <div class="modal">
+      <h2 id="modal-title">Tạo Album Mới</h2>
+      <form id="album-form">
+        <input type="hidden" id="album-id">
+        <div class="form-group">
+          <label for="album-name">Tên Album *</label>
+          <input type="text" id="album-name" required placeholder="Nhập tên album">
+        </div>
+        <div class="form-group">
+          <label for="album-description">Mô tả</label>
+          <textarea id="album-description" placeholder="Mô tả về album"></textarea>
+        </div>
+        <div class="form-group">
+          <label for="album-drive-link">Link Google Drive *</label>
+          <input type="text" id="album-drive-link" required 
+                 placeholder="https://drive.google.com/drive/folders/xxx">
+          <small style="color: #666;">Đảm bảo folder đã được set quyền "Anyone with the link can view"</small>
+        </div>
+        <div class="form-group">
+          <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+            <input type="checkbox" id="album-private" onchange="togglePasswordField()">
+            <span>Album riêng tư (yêu cầu mật khẩu)</span>
+          </label>
+        </div>
+        <div class="form-group" id="password-group" style="display: none;">
+          <label for="album-password">Mật khẩu album</label>
+          <input type="password" id="album-password" placeholder="Nhập mật khẩu cho album">
+          <small style="color: #666;">Để trống nếu muốn giữ mật khẩu cũ (khi chỉnh sửa)</small>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" onclick="closeModal()">Hủy</button>
+          <button type="submit" class="btn btn-primary">
+            <i class="fas fa-save"></i> Lưu
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    const API_URL = '';
+    let token = localStorage.getItem('adminToken');
+
+    function showMessage(text, type = 'success') {
+      const msg = document.getElementById('message');
+      msg.className = type === 'success' ? 'success-message' : 'error-message';
+      msg.textContent = text;
+      msg.style.display = 'block';
+      setTimeout(() => msg.style.display = 'none', 3000);
+    }
+
+    function checkAuth() {
+      if (token) {
+        document.getElementById('login-section').style.display = 'none';
+        document.getElementById('admin-section').style.display = 'block';
+        loadAlbums();
+      }
+    }
+
+    document.getElementById('login-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const username = document.getElementById('username').value;
+      const password = document.getElementById('password').value;
+      const errorEl = document.getElementById('login-error');
+
+      try {
+        const res = await fetch(`${API_URL}/api/auth/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password })
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          errorEl.textContent = data.error;
+          errorEl.style.display = 'block';
+          return;
+        }
+
+        token = data.token;
+        localStorage.setItem('adminToken', token);
+        checkAuth();
+      } catch (err) {
+        errorEl.textContent = 'Lỗi kết nối server';
+        errorEl.style.display = 'block';
+      }
+    };
+
+    function logout() {
+      localStorage.removeItem('adminToken');
+      token = null;
+      location.reload();
+    }
+
+    async function loadAlbums() {
+      const loading = document.getElementById('loading');
+      const container = document.getElementById('albums-container');
+
+      loading.style.display = 'block';
+      container.innerHTML = '';
+
+      try {
+        const res = await fetch(`${API_URL}/api/albums`);
+        const albums = await res.json();
+
+        loading.style.display = 'none';
+
+        if (albums.length === 0) {
+          container.innerHTML = `
+            <div class="no-results" style="grid-column: 1/-1;">
+              <i class="fas fa-folder-plus" style="font-size: 4rem; color: #ddd; margin-bottom: 20px;"></i>
+              <h2>Chưa có album nào</h2>
+              <p>Bấm "Tạo Album" để bắt đầu</p>
+            </div>
+          `;
+          return;
+        }
+
+        albums.forEach(album => {
+          const card = document.createElement('div');
+          card.className = 'card album-card';
+          const privacyIcon = album.is_private ? '<i class="fas fa-lock" style="color: #dc3545;" title="Album riêng tư"></i> ' : '';
+          card.innerHTML = `
+            <div class="thumbnail">
+              ${album.thumbnail 
+                ? `<img src="${album.thumbnail}" alt="${album.name}" onerror="this.parentElement.innerHTML='<i class=\\'fas fa-images\\'></i>'">`
+                : '<i class="fas fa-images"></i>'
+              }
+            </div>
+            <div class="info">
+              <h3>${privacyIcon}${album.name}</h3>
+              <p>${album.description || 'Không có mô tả'}</p>
+              <div class="meta">
+                <span><i class="fas fa-image"></i> ${album.photo_count || 0} ảnh</span>
+                <span><i class="fas fa-calendar"></i> ${new Date(album.created_at).toLocaleDateString('vi-VN')}</span>
+              </div>
+              <div id="encoding-status-${album.id}" class="encoding-status"></div>
+              <div class="album-actions">
+                <button class="btn btn-success" onclick="event.stopPropagation(); syncAlbum(${album.id})">
+                  <i class="fas fa-sync"></i> Sync
+                </button>
+                <button class="btn btn-primary" onclick="event.stopPropagation(); editAlbum(${album.id})">
+                  <i class="fas fa-edit"></i> Sửa
+                </button>
+                <button class="btn btn-danger" onclick="event.stopPropagation(); deleteAlbum(${album.id})">
+                  <i class="fas fa-trash"></i> Xóa
+                </button>
+              </div>
+            </div>
+          `;
+          card.onclick = () => window.open(`/album/${album.id}`, '_blank');
+          container.appendChild(card);
+          
+          // Load encoding status
+          loadEncodingStatus(album.id);
+        });
+      } catch (err) {
+        loading.style.display = 'none';
+        showMessage('Lỗi tải albums: ' + err.message, 'error');
+      }
+    }
+
+    function showCreateModal() {
+      document.getElementById('modal-title').textContent = 'Tạo Album Mới';
+      document.getElementById('album-id').value = '';
+      document.getElementById('album-name').value = '';
+      document.getElementById('album-description').value = '';
+      document.getElementById('album-drive-link').value = '';
+      document.getElementById('album-drive-link').disabled = false;
+      document.getElementById('album-private').checked = false;
+      document.getElementById('album-password').value = '';
+      document.getElementById('password-group').style.display = 'none';
+      document.getElementById('album-modal').classList.add('active');
+    }
+
+    function togglePasswordField() {
+      const isPrivate = document.getElementById('album-private').checked;
+      document.getElementById('password-group').style.display = isPrivate ? 'block' : 'none';
+    }
+
+    async function editAlbum(id) {
+      try {
+        const res = await fetch(`${API_URL}/api/albums/${id}`);
+        const album = await res.json();
+
+        document.getElementById('modal-title').textContent = 'Chỉnh sửa Album';
+        document.getElementById('album-id').value = album.id;
+        document.getElementById('album-name').value = album.name;
+        document.getElementById('album-description').value = album.description || '';
+        document.getElementById('album-drive-link').value = album.drive_link;
+        document.getElementById('album-drive-link').disabled = true;
+        document.getElementById('album-private').checked = album.is_private === 1;
+        document.getElementById('album-password').value = '';
+        document.getElementById('password-group').style.display = album.is_private ? 'block' : 'none';
+        document.getElementById('album-modal').classList.add('active');
+      } catch (err) {
+        showMessage('Lỗi tải album: ' + err.message, 'error');
+      }
+    }
+
+    function closeModal() {
+      document.getElementById('album-modal').classList.remove('active');
+    }
+
+    document.getElementById('album-form').onsubmit = async (e) => {
+      e.preventDefault();
+
+      const submitBtn = e.target.querySelector('button[type="submit"]');
+      const originalText = submitBtn.innerHTML;
+
+      // Lock button
+      submitBtn.disabled = true;
+      submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Đang xử lý...';
+
+      const id = document.getElementById('album-id').value;
+      const name = document.getElementById('album-name').value;
+      const description = document.getElementById('album-description').value;
+      const drive_link = document.getElementById('album-drive-link').value;
+      const is_private = document.getElementById('album-private').checked;
+      const password = document.getElementById('album-password').value;
+
+      try {
+        const url = id ? `${API_URL}/api/albums/${id}` : `${API_URL}/api/albums`;
+        const method = id ? 'PUT' : 'POST';
+
+        const body = { name, description, drive_link, is_private };
+        if (password) body.password = password;
+
+        const res = await fetch(url, {
+          method,
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(body)
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          showMessage(data.error, 'error');
+          // Unlock button on error
+          submitBtn.disabled = false;
+          submitBtn.innerHTML = originalText;
+          return;
+        }
+
+        closeModal();
+        showMessage(id ? 'Đã cập nhật album' : 'Đã tạo album thành công! Đang đồng bộ ảnh...');
+        loadAlbums();
+        
+        // Unlock button
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = originalText;
+      } catch (err) {
+        showMessage('Lỗi: ' + err.message, 'error');
+        // Unlock button on error
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = originalText;
+      }
+    };
+
+    async function syncAlbum(id) {
+      if (!confirm('Đồng bộ lại ảnh từ Google Drive?')) return;
+
+      try {
+        showMessage('Đang đồng bộ...', 'success');
+        const res = await fetch(`${API_URL}/api/albums/${id}/sync`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          showMessage(data.error, 'error');
+          return;
+        }
+
+        showMessage(data.message);
+        loadAlbums();
+      } catch (err) {
+        showMessage('Lỗi đồng bộ: ' + err.message, 'error');
+      }
+    }
+
+    async function deleteAlbum(id) {
+      if (!confirm('Bạn có chắc muốn xóa album này?')) return;
+
+      try {
+        const res = await fetch(`${API_URL}/api/albums/${id}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+
+        if (!res.ok) {
+          const data = await res.json();
+          showMessage(data.error, 'error');
+          return;
+        }
+
+        showMessage('Đã xóa album');
+        loadAlbums();
+      } catch (err) {
+        showMessage('Lỗi xóa: ' + err.message, 'error');
+      }
+    }
+
+    async function loadEncodingStatus(albumId) {
+      const statusEl = document.getElementById(`encoding-status-${albumId}`);
+      if (!statusEl) return;
+
+      try {
+        const res = await fetch(`${API_URL}/api/albums/${albumId}/encoding-status`);
+        const status = await res.json();
+        
+        let html = '';
+        let className = '';
+        
+        switch (status.status) {
+          case 'completed':
+            html = `<i class="fas fa-check-circle"></i> Sẵn sàng (${status.total_faces} khuôn mặt)`;
+            className = 'status-completed';
+            break;
+          case 'encoding':
+            const progress = status.total_photos > 0 
+              ? Math.round((status.processed_photos / status.total_photos) * 100) 
+              : 0;
+            html = `
+              <div style="width: 100%;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <i class="fas fa-spinner fa-spin"></i> 
+                  <span>Đang xử lý: ${status.processed_photos}/${status.total_photos} (${progress}%)</span>
+                </div>
+                <div class="progress-bar">
+                  <div class="progress-bar-fill" style="width: ${progress}%"></div>
+                </div>
+              </div>
+            `;
+            className = 'status-encoding';
+            setTimeout(() => loadEncodingStatus(albumId), 3000);
+            break;
+          case 'error':
+            html = `<i class="fas fa-exclamation-circle"></i> Lỗi: ${status.error}`;
+            className = 'status-error';
+            break;
+          case 'not_started':
+            html = `<i class="fas fa-clock"></i> Chưa xử lý - Nhấn Sync để bắt đầu`;
+            className = 'status-pending';
+            break;
+          default:
+            html = `<i class="fas fa-question-circle"></i> Không rõ trạng thái`;
+            className = 'status-unknown';
+        }
+        
+        statusEl.innerHTML = html;
+        statusEl.className = `encoding-status ${className}`;
+      } catch (err) {
+        statusEl.innerHTML = `<i class="fas fa-wifi"></i> Không thể kiểm tra trạng thái`;
+        statusEl.className = 'encoding-status status-error';
+      }
+    }
+
+    document.getElementById('album-modal').onclick = (e) => {
+      if (e.target.classList.contains('modal-overlay')) closeModal();
+    };
+
+    checkAuth();
+  </script>
+</body>
+</html>

@@ -1,0 +1,119 @@
+version: '3.8'
+
+services:
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: face-album-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    networks:
+      - face-album-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Node.js Web Server
+  web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.node
+    container_name: face-album-web
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - JWT_SECRET=${JWT_SECRET:-change-this-secret}
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - FACE_API_URL=http://face-api:5001
+      - REDIS_URL=redis://redis:6379
+      - USE_QUEUE=${USE_QUEUE:-false}
+    volumes:
+      - ./data:/app/data
+      - sqlite-data:/app/server
+    depends_on:
+      redis:
+        condition: service_healthy
+      face-api:
+        condition: service_healthy
+    networks:
+      - face-album-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Background Worker (optional - for queue processing)
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.node
+    container_name: face-album-worker
+    restart: unless-stopped
+    command: ["node", "server/worker.js"]
+    environment:
+      - NODE_ENV=production
+      - FACE_API_URL=http://face-api:5001
+      - REDIS_URL=redis://redis:6379
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+      face-api:
+        condition: service_healthy
+    networks:
+      - face-album-network
+    profiles:
+      - with-worker
+
+  # Python Face Recognition API
+  face-api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+    container_name: face-album-api
+    restart: unless-stopped
+    ports:
+      - "5001:5001"
+    volumes:
+      - ./data:/app/data
+      - insightface-models:/root/.insightface
+    networks:
+      - face-album-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+
+networks:
+  face-album-network:
+    driver: bridge
+
+volumes:
+  redis-data:
+    driver: local
+  sqlite-data:
+    driver: local
+  insightface-models:
+    driver: local

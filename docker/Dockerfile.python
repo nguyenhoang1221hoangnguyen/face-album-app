@@ -1,0 +1,38 @@
+# Python Dockerfile for Face Recognition API
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Install system dependencies for OpenCV and InsightFace
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgl1-mesa-glx \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY python/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy source code
+COPY python/ ./python/
+
+# Create data directories
+RUN mkdir -p data/encodings data/status
+
+# Download InsightFace model on build (optional - will download on first run if not)
+# RUN python -c "from insightface.app import FaceAnalysis; FaceAnalysis(name='buffalo_l')"
+
+# Expose port
+EXPOSE 5001
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:5001/health || exit 1
+
+# Start server
+CMD ["python", "python/face_api.py"]

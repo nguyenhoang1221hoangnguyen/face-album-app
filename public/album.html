@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Xem Album - Face Album</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <div>
+        <a href="/" style="text-decoration: none; color: #667eea;">
+          <i class="fas fa-arrow-left"></i> Quay lại
+        </a>
+        <h1 id="album-title" style="margin-top: 10px;">Đang tải...</h1>
+        <p id="album-description"></p>
+        <div id="album-stats" class="stats-bar"></div>
+      </div>
+    </header>
+
+    <!-- Face Search Section -->
+    <div class="face-search-section">
+      <h2><i class="fas fa-search"></i> Tìm ảnh của bạn</h2>
+      <p style="color: #666; margin-bottom: 20px;">Chọn một trong hai cách sau để tìm ảnh có mặt bạn</p>
+      
+      <div class="search-options">
+        <div class="search-option" onclick="startCamera()">
+          <i class="fas fa-camera"></i>
+          <h3>Quét khuôn mặt</h3>
+          <p>Sử dụng camera để quét khuôn mặt của bạn</p>
+        </div>
+        <div class="search-option" onclick="document.getElementById('upload-input').click()">
+          <i class="fas fa-upload"></i>
+          <h3>Tải ảnh lên</h3>
+          <p>Upload ảnh có mặt của bạn để tìm kiếm</p>
+        </div>
+        <input type="file" id="upload-input" accept="image/*" style="display: none;" onchange="handleUpload(event)">
+      </div>
+
+      <!-- Camera Container -->
+      <div id="camera-container" style="display: none; margin-top: 20px;">
+        <div id="video-container">
+          <video id="video" autoplay muted playsinline></video>
+        </div>
+        <div style="text-align: center; margin-top: 15px;">
+          <button class="btn btn-primary" onclick="captureAndSearch()">
+            <i class="fas fa-camera"></i> Chụp & Tìm kiếm
+          </button>
+          <button class="btn btn-secondary" onclick="stopCamera()">
+            <i class="fas fa-times"></i> Đóng camera
+          </button>
+        </div>
+      </div>
+
+      <!-- Upload Preview -->
+      <div id="upload-preview" style="display: none; margin-top: 20px; text-align: center;">
+        <img id="preview-image" style="max-width: 300px; border-radius: 15px;">
+        <div style="margin-top: 15px;">
+          <button class="btn btn-primary" onclick="searchFromUpload()">
+            <i class="fas fa-search"></i> Tìm kiếm
+          </button>
+          <button class="btn btn-secondary" onclick="closeUploadPreview()">
+            <i class="fas fa-times"></i> Hủy
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- View All Photos Button -->
+    <div id="view-all-section" class="view-all-section" style="display: none;">
+      <button class="view-all-btn" onclick="viewAllPhotos()">
+        <i class="fas fa-images"></i> Xem tất cả ảnh trong album
+      </button>
+    </div>
+
+    <!-- Loading -->
+    <div id="loading" class="loading" style="display: none;">
+      <div class="spinner"></div>
+      <p id="loading-text">Đang tải...</p>
+    </div>
+
+    <!-- Results Count -->
+    <div id="results-count" class="results-count" style="display: none;"></div>
+
+    <!-- Hướng dẫn quét mặt -->
+    <div id="scan-prompt" class="card" style="text-align: center; padding: 60px 20px;">
+      <i class="fas fa-user-circle" style="font-size: 5rem; color: #667eea; margin-bottom: 20px;"></i>
+      <h2 style="color: #333; margin-bottom: 15px;">Quét khuôn mặt để xem ảnh của bạn</h2>
+      <p style="color: #666;">Sử dụng camera hoặc upload ảnh có mặt bạn ở phần trên để tìm kiếm</p>
+      <p style="color: #999; margin-top: 10px; font-size: 0.9rem;" id="photo-count-info"></p>
+    </div>
+
+    <!-- Photos Grid (ẩn ban đầu) -->
+    <div id="photos-container" class="photos-grid" style="display: none;"></div>
+
+    <!-- Pagination -->
+    <div id="pagination" class="pagination" style="display: none;"></div>
+
+    <div id="no-photos" class="no-results" style="display: none;">
+      <i class="fas fa-image" style="font-size: 4rem; color: #ddd; margin-bottom: 20px;"></i>
+      <h2>Album chưa có ảnh</h2>
+      <p>Album này chưa được đồng bộ ảnh từ Google Drive</p>
+    </div>
+  </div>
+
+  <!-- Password Modal for Private Albums -->
+  <div id="password-modal" class="modal-overlay">
+    <div class="modal" style="max-width: 400px;">
+      <h2><i class="fas fa-lock" style="color: #667eea;"></i> Album Riêng Tư</h2>
+      <p style="color: #666; margin-bottom: 20px;">Album này yêu cầu mật khẩu để xem</p>
+      <div id="password-error" class="error-message" style="display: none;"></div>
+      <form id="password-form">
+        <div class="form-group">
+          <label for="view-password">Mật khẩu</label>
+          <input type="password" id="view-password" required placeholder="Nhập mật khẩu album">
+        </div>
+        <div class="modal-actions">
+          <a href="/" class="btn btn-secondary">Quay lại</a>
+          <button type="submit" class="btn btn-primary">
+            <i class="fas fa-unlock"></i> Mở khóa
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Lightbox -->
+  <div id="lightbox" class="lightbox">
+    <span class="close" onclick="closeLightbox()">&times;</span>
+    <button class="nav-btn nav-prev" onclick="prevPhoto(event)"><i class="fas fa-chevron-left"></i></button>
+    <img id="lightbox-image" src="">
+    <button class="nav-btn nav-next" onclick="nextPhoto(event)"><i class="fas fa-chevron-right"></i></button>
+    <button class="download-btn" onclick="downloadCurrentPhoto(event)">
+      <i class="fas fa-download"></i> Tải xuống
+    </button>
+  </div>
+
+  <!-- Hidden canvas for capturing -->
+  <canvas id="capture-canvas" style="display: none;"></canvas>
+
+  <script>
+    const API_URL = '';
+    const albumId = window.location.pathname.split('/').pop();
+    
+    let allPhotos = [];
+    let displayedPhotos = [];
+    let currentPhotoIndex = 0;
+    let videoStream = null;
+    let currentPage = 1;
+    const photosPerPage = 50;
+    let isSearchMode = false;
+
+    let matchedPhotoIds = new Set(); // IDs của ảnh tìm được từ face search
+    let albumPassword = ''; // Mật khẩu album (nếu có)
+    let albumInfo = null; // Thông tin album
+
+    async function loadAlbum() {
+      try {
+        const res = await fetch(`${API_URL}/api/albums/${albumId}`);
+        if (!res.ok) throw new Error('Album không tồn tại');
+        
+        albumInfo = await res.json();
+        document.getElementById('album-title').textContent = albumInfo.name;
+        document.getElementById('album-description').textContent = albumInfo.description || '';
+        document.title = `${albumInfo.name} - Face Album`;
+
+        // Check if album is private
+        if (albumInfo.is_private) {
+          document.getElementById('password-modal').classList.add('active');
+        } else {
+          loadPhotos();
+        }
+      } catch (err) {
+        document.getElementById('album-title').textContent = 'Lỗi';
+        document.getElementById('album-description').textContent = err.message;
+      }
+    }
+
+    document.getElementById('password-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const password = document.getElementById('view-password').value;
+      const errorEl = document.getElementById('password-error');
+
+      try {
+        const res = await fetch(`${API_URL}/api/albums/${albumId}/verify-password`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password })
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          errorEl.textContent = data.error;
+          errorEl.style.display = 'block';
+          return;
+        }
+
+        albumPassword = password;
+        document.getElementById('password-modal').classList.remove('active');
+        loadPhotos();
+      } catch (err) {
+        errorEl.textContent = 'Lỗi kết nối server';
+        errorEl.style.display = 'block';
+      }
+    };
+
+    async function loadPhotos() {
+      const loading = document.getElementById('loading');
+      const noPhotos = document.getElementById('no-photos');
+      const scanPrompt = document.getElementById('scan-prompt');
+      const photoCountInfo = document.getElementById('photo-count-info');
+      const viewAllSection = document.getElementById('view-all-section');
+      const albumStats = document.getElementById('album-stats');
+
+      loading.style.display = 'block';
+      document.getElementById('loading-text').textContent = 'Đang tải ảnh...';
+
+      try {
+        const headers = {};
+        if (albumPassword) {
+          headers['X-Album-Password'] = albumPassword;
+        }
+
+        const res = await fetch(`${API_URL}/api/albums/${albumId}/photos`, { headers });
+        
+        if (res.status === 401) {
+          document.getElementById('password-modal').classList.add('active');
+          loading.style.display = 'none';
+          return;
+        }
+
+        allPhotos = await res.json();
+
+        loading.style.display = 'none';
+
+        if (allPhotos.length === 0) {
+          scanPrompt.style.display = 'none';
+          noPhotos.style.display = 'block';
+          return;
+        }
+
+        photoCountInfo.textContent = `Album có ${allPhotos.length} ảnh`;
+        viewAllSection.style.display = 'block';
+        
+        albumStats.innerHTML = `
+          <div class="stat-item"><i class="fas fa-image"></i> ${allPhotos.length} ảnh</div>
+        `;
+      } catch (err) {
+        loading.style.display = 'none';
+        scanPrompt.innerHTML = `<div class="error-message">Lỗi tải ảnh: ${err.message}</div>`;
+      }
+    }
+
+    function showSkeletonLoading(count = 12) {
+      const container = document.getElementById('photos-container');
+      container.innerHTML = '';
+      container.style.display = 'grid';
+      
+      for (let i = 0; i < count; i++) {
+        const div = document.createElement('div');
+        div.className = 'skeleton photo-skeleton';
+        container.appendChild(div);
+      }
+    }
+
+    function renderPhotos(photos, page = 1) {
+      const container = document.getElementById('photos-container');
+      const pagination = document.getElementById('pagination');
+      
+      displayedPhotos = photos;
+      const totalPages = Math.ceil(photos.length / photosPerPage);
+      const startIndex = (page - 1) * photosPerPage;
+      const endIndex = startIndex + photosPerPage;
+      const pagePhotos = photos.slice(startIndex, endIndex);
+
+      container.innerHTML = '';
+
+      pagePhotos.forEach((photo, index) => {
+        const div = document.createElement('div');
+        const isMatched = matchedPhotoIds.has(photo.id);
+        div.className = 'photo-item' + (isMatched ? ' matched' : '');
+        div.innerHTML = `
+          <img src="${photo.thumbnail_url || photo.full_url}" alt="${photo.name}" loading="lazy" onerror="this.parentElement.style.display='none'">
+          ${isSearchMode ? `<button class="photo-download-btn" onclick="event.stopPropagation(); downloadSinglePhoto(${startIndex + index})" title="Tải ảnh này"><i class="fas fa-download"></i></button>` : ''}
+        `;
+        div.onclick = () => openLightbox(startIndex + index);
+        container.appendChild(div);
+      });
+      
+      container.style.display = 'grid';
+
+      if (totalPages > 1) {
+        renderPagination(page, totalPages, photos.length);
+        pagination.style.display = 'flex';
+      } else {
+        pagination.style.display = 'none';
+      }
+    }
+
+    function downloadSinglePhoto(index) {
+      const photo = displayedPhotos[index];
+      const url = getHighResUrl(photo);
+      window.open(url, '_blank');
+    }
+
+    function renderPagination(currentPage, totalPages, totalPhotos) {
+      const pagination = document.getElementById('pagination');
+      let html = '';
+
+      html += `<button ${currentPage === 1 ? 'disabled' : ''} onclick="goToPage(${currentPage - 1})"><i class="fas fa-chevron-left"></i></button>`;
+      
+      const maxVisiblePages = 5;
+      let startPage = Math.max(1, currentPage - Math.floor(maxVisiblePages / 2));
+      let endPage = Math.min(totalPages, startPage + maxVisiblePages - 1);
+      
+      if (endPage - startPage + 1 < maxVisiblePages) {
+        startPage = Math.max(1, endPage - maxVisiblePages + 1);
+      }
+
+      if (startPage > 1) {
+        html += `<button onclick="goToPage(1)">1</button>`;
+        if (startPage > 2) html += `<span class="page-info">...</span>`;
+      }
+
+      for (let i = startPage; i <= endPage; i++) {
+        html += `<button class="${i === currentPage ? 'active' : ''}" onclick="goToPage(${i})">${i}</button>`;
+      }
+
+      if (endPage < totalPages) {
+        if (endPage < totalPages - 1) html += `<span class="page-info">...</span>`;
+        html += `<button onclick="goToPage(${totalPages})">${totalPages}</button>`;
+      }
+
+      html += `<button ${currentPage === totalPages ? 'disabled' : ''} onclick="goToPage(${currentPage + 1})"><i class="fas fa-chevron-right"></i></button>`;
+      html += `<span class="page-info">${totalPhotos} ảnh</span>`;
+
+      pagination.innerHTML = html;
+    }
+
+    function goToPage(page) {
+      currentPage = page;
+      renderPhotos(displayedPhotos, page);
+      document.getElementById('photos-container').scrollIntoView({ behavior: 'smooth' });
+    }
+
+    function viewAllPhotos() {
+      isSearchMode = false;
+      document.getElementById('scan-prompt').style.display = 'none';
+      document.getElementById('results-count').style.display = 'none';
+      currentPage = 1;
+      renderPhotos(allPhotos, 1);
+    }
+
+    function getHighResUrl(photo) {
+      if (!photo) return '';
+      
+      // Dùng drive_file_id để tạo URL trực tiếp từ Google Drive
+      if (photo.drive_file_id) {
+        // URL này hoạt động cho public folders
+        return `https://drive.google.com/thumbnail?id=${photo.drive_file_id}&sz=w1600`;
+      }
+      
+      // Fallback: dùng thumbnail_url gốc (size nhỏ)
+      if (photo.thumbnail_url) {
+        return photo.thumbnail_url;
+      }
+      
+      return photo.full_url || '';
+    }
+
+    function openLightbox(index) {
+      console.log('Opening lightbox, index:', index, 'displayedPhotos length:', displayedPhotos.length);
+      if (index < 0 || index >= displayedPhotos.length) {
+        console.error('Invalid photo index:', index);
+        return;
+      }
+      currentPhotoIndex = index;
+      const photo = displayedPhotos[index];
+      console.log('Photo:', photo);
+      if (!photo) {
+        console.error('Photo not found at index:', index);
+        return;
+      }
+      const url = getHighResUrl(photo);
+      console.log('High res URL:', url);
+      document.getElementById('lightbox-image').src = url;
+      document.getElementById('lightbox').classList.add('active');
+    }
+
+    function closeLightbox() {
+      document.getElementById('lightbox').classList.remove('active');
+    }
+
+    function prevPhoto(event) {
+      event.stopPropagation();
+      if (currentPhotoIndex > 0) {
+        currentPhotoIndex--;
+        document.getElementById('lightbox-image').src = getHighResUrl(displayedPhotos[currentPhotoIndex]);
+      }
+    }
+
+    function nextPhoto(event) {
+      event.stopPropagation();
+      if (currentPhotoIndex < displayedPhotos.length - 1) {
+        currentPhotoIndex++;
+        document.getElementById('lightbox-image').src = getHighResUrl(displayedPhotos[currentPhotoIndex]);
+      }
+    }
+
+    function downloadCurrentPhoto(event) {
+      event.stopPropagation();
+      const photo = displayedPhotos[currentPhotoIndex];
+      const downloadUrl = getHighResUrl(photo);
+      window.open(downloadUrl, '_blank');
+    }
+
+    async function startCamera() {
+      const cameraContainer = document.getElementById('camera-container');
+      const video = document.getElementById('video');
+
+      try {
+        videoStream = await navigator.mediaDevices.getUserMedia({ 
+          video: { facingMode: 'user', width: 640, height: 480 } 
+        });
+        video.srcObject = videoStream;
+        cameraContainer.style.display = 'block';
+      } catch (err) {
+        alert('Không thể truy cập camera: ' + err.message);
+      }
+    }
+
+    function stopCamera() {
+      if (videoStream) {
+        videoStream.getTracks().forEach(track => track.stop());
+        videoStream = null;
+      }
+      document.getElementById('camera-container').style.display = 'none';
+    }
+
+    function captureImage() {
+      const video = document.getElementById('video');
+      const canvas = document.getElementById('capture-canvas');
+      const ctx = canvas.getContext('2d');
+      
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      ctx.drawImage(video, 0, 0);
+      
+      return canvas.toDataURL('image/jpeg', 0.8);
+    }
+
+    async function captureAndSearch() {
+      const imageBase64 = captureImage();
+      stopCamera();
+      await searchFaces(imageBase64);
+    }
+
+    function handleUpload(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        document.getElementById('preview-image').src = e.target.result;
+        document.getElementById('upload-preview').style.display = 'block';
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function closeUploadPreview() {
+      document.getElementById('upload-preview').style.display = 'none';
+      document.getElementById('upload-input').value = '';
+    }
+
+    async function searchFromUpload() {
+      const imageBase64 = document.getElementById('preview-image').src;
+      closeUploadPreview();
+      await searchFaces(imageBase64);
+    }
+
+    async function searchFaces(imageBase64) {
+      const loading = document.getElementById('loading');
+      const resultsCount = document.getElementById('results-count');
+      const scanPrompt = document.getElementById('scan-prompt');
+      const container = document.getElementById('photos-container');
+      
+      loading.style.display = 'block';
+      document.getElementById('loading-text').textContent = 'Đang tìm kiếm khuôn mặt...';
+
+      try {
+        const res = await fetch(`${API_URL}/api/albums/${albumId}/search`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: imageBase64 })
+        });
+
+        const result = await res.json();
+        
+        loading.style.display = 'none';
+        scanPrompt.style.display = 'none';
+
+        if (!res.ok) {
+          resultsCount.innerHTML = `❌ ${result.error} <button class="reset-search-btn" onclick="resetSearch()"><i class="fas fa-redo"></i> Thử lại</button>`;
+          resultsCount.style.background = '#ffe6e6';
+          resultsCount.style.color = '#dc3545';
+          resultsCount.style.display = 'block';
+          return;
+        }
+
+        if (result.photos && result.photos.length > 0) {
+          // Set search mode TRƯỚC khi render
+          isSearchMode = true;
+          
+          // Lưu ảnh tìm được
+          matchedPhotoIds = new Set(result.photos.map(p => p.id));
+          
+          console.log('Found photos:', result.photos.length, result.photos);
+          
+          resultsCount.innerHTML = `🎉 Tìm thấy ${result.total} ảnh có mặt bạn! <button class="reset-search-btn" onclick="resetSearch()"><i class="fas fa-redo"></i> Tìm lại</button>`;
+          resultsCount.style.background = '#e6ffe6';
+          resultsCount.style.color = '#28a745';
+          resultsCount.style.display = 'block';
+          
+          // Ẩn scan prompt
+          document.getElementById('scan-prompt').style.display = 'none';
+          document.getElementById('view-all-section').style.display = 'none';
+          
+          // Hiển thị CHỈ ảnh matched
+          currentPage = 1;
+          renderPhotos(result.photos, 1);
+        } else {
+          resultsCount.innerHTML = `😔 Không tìm thấy ảnh nào có mặt bạn trong album này <button class="reset-search-btn" onclick="resetSearch()"><i class="fas fa-redo"></i> Thử lại</button>`;
+          resultsCount.style.background = '#fff3cd';
+          resultsCount.style.color = '#856404';
+          resultsCount.style.display = 'block';
+          container.style.display = 'none';
+        }
+      } catch (err) {
+        loading.style.display = 'none';
+        resultsCount.innerHTML = `❌ Lỗi: ${err.message} <button class="reset-search-btn" onclick="resetSearch()"><i class="fas fa-redo"></i> Thử lại</button>`;
+        resultsCount.style.background = '#ffe6e6';
+        resultsCount.style.color = '#dc3545';
+        resultsCount.style.display = 'block';
+      }
+    }
+
+    function resetSearch() {
+      isSearchMode = false;
+      matchedPhotoIds = new Set();
+      document.getElementById('results-count').style.display = 'none';
+      document.getElementById('photos-container').style.display = 'none';
+      document.getElementById('pagination').style.display = 'none';
+      document.getElementById('scan-prompt').style.display = 'block';
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if (document.getElementById('lightbox').classList.contains('active')) {
+        if (e.key === 'Escape') closeLightbox();
+        if (e.key === 'ArrowLeft') prevPhoto(e);
+        if (e.key === 'ArrowRight') nextPhoto(e);
+      }
+    });
+
+    document.getElementById('lightbox').onclick = (e) => {
+      if (e.target.id === 'lightbox' || e.target.id === 'lightbox-image') {
+        closeLightbox();
+      }
+    };
+
+    loadAlbum();
+  </script>
+</body>
+</html>
