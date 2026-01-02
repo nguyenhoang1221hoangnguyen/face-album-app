@@ -160,9 +160,18 @@
 
       try {
         const res = await fetch(`${API_URL}/api/albums`);
-        const albums = await res.json();
+        const data = await res.json();
 
         loading.style.display = 'none';
+
+        // Handle error response
+        if (!res.ok) {
+          showMessage(data.error || 'Lỗi tải albums', 'error');
+          return;
+        }
+
+        // Ensure albums is an array
+        const albums = Array.isArray(data) ? data : (data.albums || []);
 
         if (albums.length === 0) {
           container.innerHTML = `
