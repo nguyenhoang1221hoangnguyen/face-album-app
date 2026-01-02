@@ -5,7 +5,8 @@ FROM node:18-alpine AS node-builder
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --only=production
-COPY . .
+COPY server/ ./server/
+COPY public/ ./public/
 
 # Stage 2: Python Face API
 FROM python:3.11-slim AS python-base
@@ -26,14 +27,13 @@ COPY python/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY python/ ./python/
-COPY data/ ./data/ 2>/dev/null || mkdir -p ./data
 
 # Stage 3: Final image with both Node.js and Python
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install Node.js
+# Install Node.js and system dependencies
 RUN apt-get update && apt-get install -y \
     curl \
     libgl1-mesa-glx \
@@ -57,7 +57,7 @@ COPY --from=node-builder /app/server ./server
 COPY --from=node-builder /app/public ./public
 
 # Copy Python app
-COPY python/ ./python/
+COPY --from=python-base /app/python ./python
 
 # Create data directories
 RUN mkdir -p ./data/encodings ./data/status
@@ -72,8 +72,10 @@ EXPOSE 3000 5001
 
 # Create startup script
 RUN echo '#!/bin/bash\n\
+echo "Starting Face Recognition API..."\n\
 python python/face_api.py &\n\
-sleep 5\n\
+sleep 10\n\
+echo "Starting Web Server..."\n\
 node server/server.js\n\
 ' > /app/start.sh && chmod +x /app/start.sh
 
