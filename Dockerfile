@@ -13,8 +13,10 @@ FROM python:3.11-slim AS python-base
 
 WORKDIR /app
 
-# Install system dependencies for OpenCV/InsightFace
+# Install build tools and system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    g++ \
     libgl1 \
     libglib2.0-0 \
     libsm6 \
