@@ -43,7 +43,8 @@ RUN python -c "from insightface.app import FaceAnalysis; app = FaceAnalysis(name
 ENV NODE_ENV=production
 ENV FACE_API_PORT=5001
 ENV WEB_PORT=3000
-ENV FACE_API_URL=http://localhost:5001
+ENV FACE_API_URL=http://127.0.0.1:5001
+ENV REDIS_ENABLED=false
 
 # Expose ports
 EXPOSE 3000 5001

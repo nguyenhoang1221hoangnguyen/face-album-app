@@ -14,6 +14,9 @@ const albumRoutes = require('./routes/albums');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Trust proxy when behind reverse proxy (Coolify, nginx, etc.)
+app.set('trust proxy', 1);
+
 // Security middleware
 app.use(helmet({
   contentSecurityPolicy: false, // Disable for inline scripts
