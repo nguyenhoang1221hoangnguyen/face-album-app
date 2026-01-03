@@ -49,18 +49,47 @@ ENV REDIS_ENABLED=false
 # Expose ports
 EXPOSE 3000 5001
 
-# Create startup script with better error handling
+# Create startup script with auto-restart
 RUN printf '#!/bin/bash\n\
-set -e\n\
-echo "Starting Face Recognition API on port 5001..."\n\
-PORT=5001 python python/face_api.py &\n\
-PYTHON_PID=$!\n\
-echo "Waiting for Face API to start..."\n\
-sleep 15\n\
-echo "Starting Web Server on port 3000..."\n\
-PORT=3000 node server/server.js &\n\
-NODE_PID=$!\n\
-wait $PYTHON_PID $NODE_PID\n\
+\n\
+# Function to start Face API\n\
+start_face_api() {\n\
+    echo "Starting Face Recognition API on port 5001..."\n\
+    PORT=5001 python python/face_api.py &\n\
+    PYTHON_PID=$!\n\
+    echo "Face API started with PID: $PYTHON_PID"\n\
+}\n\
+\n\
+# Function to start Node server\n\
+start_node() {\n\
+    echo "Starting Web Server on port 3000..."\n\
+    PORT=3000 node server/server.js &\n\
+    NODE_PID=$!\n\
+    echo "Node server started with PID: $NODE_PID"\n\
+}\n\
+\n\
+# Start services\n\
+start_face_api\n\
+sleep 10\n\
+start_node\n\
+\n\
+# Monitor and restart if needed\n\
+while true; do\n\
+    sleep 30\n\
+    \n\
+    # Check if Face API is running\n\
+    if ! kill -0 $PYTHON_PID 2>/dev/null; then\n\
+        echo "Face API crashed, restarting..."\n\
+        start_face_api\n\
+        sleep 5\n\
+    fi\n\
+    \n\
+    # Check if Node is running\n\
+    if ! kill -0 $NODE_PID 2>/dev/null; then\n\
+        echo "Node server crashed, restarting..."\n\
+        start_node\n\
+    fi\n\
+done\n\
 ' > /app/start.sh && chmod +x /app/start.sh
 
 CMD ["/bin/bash", "/app/start.sh"]

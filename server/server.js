@@ -70,7 +70,7 @@ app.get('/album/:id', (req, res) => {
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-  console.error('Error:', err.message);
+  console.error('Error:', err.stack || err.message);
   res.status(err.status || 500).json({
     error: err.message || 'Lỗi server'
   });
@@ -79,6 +79,15 @@ app.use((err, req, res, next) => {
 // 404 handler
 app.use((req, res) => {
   res.status(404).json({ error: 'Không tìm thấy trang' });
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
 // Initialize
